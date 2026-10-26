@@ -1,0 +1,8 @@
+# PC brain (laptop). The inference server runs in the cluster env "openvla" and also needs flask.
+websockets>=10
+requests
+pandas
+numpy
+pillow
+flask
+pytest
