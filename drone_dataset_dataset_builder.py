@@ -1,0 +1,175 @@
+"""
+drone_dataset_dataset_builder.py
+
+RLDS dataset builder for the DJI Mini 3 flight episodes, for the original
+openvla/openvla fine-tuning pipeline.
+
+Reads every episode .h5 file (made by csv_to_hdf5.py) in H5_DIR and builds ONE
+dataset with a train/val split. Each .h5 holds:
+    telemetry   N x 14 float32  (column names are in the 'columns' attribute)
+    frame_file  N strings, e.g. "frames/000041.jpg"
+    instruction one string
+    attrs: episode_dir (folder with the frames); telemetry.attrs["columns"]
+
+Per step:
+    image   = camera frame i, resized to 224 x 224
+    state   = [height_above_takeoff, x_speed, y_speed, z_speed, heading]
+              (OpenVLA ignores it; kept for checks)
+    action  = [pitch_cmd, roll_cmd, throttle_cmd, yaw_cmd] / 100  -> -1 .. 1
+              the stick values the pilot held while frame i was captured
+
+Usage:
+  1. Put this file in a folder named exactly drone_dataset/ (TFDS requirement):
+         drone_dataset/drone_dataset_dataset_builder.py
+  2. Set H5_DIR below, or the environment variable DRONE_H5_DIR.
+  3. cd drone_dataset && tfds build
+     Output: ~/tensorflow_datasets/drone_dataset/1.0.0/
+
+Test without TensorFlow (checks the .h5 files and prints the action ranges):
+     python3 drone_dataset_dataset_builder.py <folder with .h5 files>
+"""
+
+import glob
+import os
+import sys
+
+import h5py
+import numpy as np
+from PIL import Image
+
+# --- Config ----------------------------------------------------------------
+H5_DIR = os.environ.get("DRONE_H5_DIR", os.path.expanduser("~/drone_database/episodes"))
+IMAGE_SHAPE = (224, 224, 3)   # OpenVLA input size
+VAL_SPLIT_FRACTION = 0.1      # last 10 % of episodes (sorted by name) are validation
+
+ACTION_COLS = ["pitch_cmd", "roll_cmd", "throttle_cmd", "yaw_cmd"]
+STATE_COLS = ["height_above_takeoff", "x_speed", "y_speed", "z_speed", "heading"]
+
+
+def load_image(path, shape=IMAGE_SHAPE):
+    with Image.open(path) as img:
+        img = img.convert("RGB").resize((shape[1], shape[0]), Image.BILINEAR)
+        return np.array(img, dtype=np.uint8)
+
+
+def _text(x):
+    return x.decode() if isinstance(x, bytes) else str(x)
+
+
+def find_h5_files(h5_dir):
+    return sorted(glob.glob(os.path.join(h5_dir, "**", "*.h5"), recursive=True))
+
+
+def load_episode(h5_path, with_images=True):
+    """Return (steps, instruction, episode_dir). steps is a list of dicts."""
+    with h5py.File(h5_path, "r") as f:
+        telemetry = np.array(f["telemetry"], dtype=np.float32)
+        frame_files = [_text(x) for x in f["frame_file"][:]]
+        instruction = _text(f["instruction"][()])
+        columns = [_text(c) for c in f["telemetry"].attrs["columns"]]
+        episode_dir = _text(f.attrs["episode_dir"])
+
+    # The folder path stored in the .h5 may belong to another computer:
+    # fall back to the folder the .h5 file itself sits in.
+    if not os.path.isdir(episode_dir):
+        episode_dir = os.path.dirname(os.path.abspath(h5_path))
+
+    idx = {name: i for i, name in enumerate(columns)}
+    actions = telemetry[:, [idx[c] for c in ACTION_COLS]] / 100.0
+    states = telemetry[:, [idx[c] for c in STATE_COLS]]
+    T = len(telemetry)
+
+    steps = []
+    for i in range(T):
+        step = {
+            "observation": {
+                "image": load_image(os.path.join(episode_dir, frame_files[i]))
+                if with_images else None,
+                "state": states[i].astype(np.float32),
+            },
+            "action": actions[i].astype(np.float32),
+            "discount": 1.0,
+            "reward": float(i == T - 1),
+            "is_first": i == 0,
+            "is_last": i == T - 1,
+            "is_terminal": i == T - 1,
+            "language_instruction": instruction,
+        }
+        steps.append(step)
+    return steps, instruction, episode_dir
+
+
+# --- TFDS builder (only defined when tensorflow_datasets is installed) ------
+try:
+    import tensorflow_datasets as tfds
+except ImportError:
+    tfds = None
+
+if tfds is not None:
+
+    class DroneDataset(tfds.core.GeneratorBasedBuilder):
+        """DatasetBuilder for the drone flight dataset."""
+
+        VERSION = tfds.core.Version("1.0.0")
+        RELEASE_NOTES = {"1.0.0": "Stick-command actions from app-recorded episodes."}
+
+        def _info(self) -> tfds.core.DatasetInfo:
+            return self.dataset_info_from_configs(
+                features=tfds.features.FeaturesDict({
+                    "steps": tfds.features.Dataset({
+                        "observation": tfds.features.FeaturesDict({
+                            "image": tfds.features.Image(
+                                shape=IMAGE_SHAPE, dtype=np.uint8, encoding_format="jpeg",
+                                doc="Main onboard camera RGB observation."),
+                            "state": tfds.features.Tensor(
+                                shape=(len(STATE_COLS),), dtype=np.float32,
+                                doc="[height_above_takeoff ft, x_speed mph (north), "
+                                    "y_speed mph (east), z_speed mph (down), heading deg]."),
+                        }),
+                        "action": tfds.features.Tensor(
+                            shape=(4,), dtype=np.float32,
+                            doc="[pitch, roll, throttle, yaw] stick values, -1 to 1 "
+                                "(raw stick percent / 100)."),
+                        "discount": tfds.features.Scalar(dtype=np.float32),
+                        "reward": tfds.features.Scalar(dtype=np.float32),
+                        "is_first": tfds.features.Scalar(dtype=np.bool_),
+                        "is_last": tfds.features.Scalar(dtype=np.bool_),
+                        "is_terminal": tfds.features.Scalar(dtype=np.bool_),
+                        "language_instruction": tfds.features.Text(),
+                    }),
+                    "episode_metadata": tfds.features.FeaturesDict({
+                        "file_path": tfds.features.Text(doc="Path of the episode .h5 file."),
+                    }),
+                }))
+
+        def _split_generators(self, dl_manager):
+            h5_files = find_h5_files(H5_DIR)
+            if not h5_files:
+                raise FileNotFoundError(f"No .h5 files found under {H5_DIR}")
+            n_val = max(1, int(len(h5_files) * VAL_SPLIT_FRACTION)) if len(h5_files) > 1 else 0
+            train = h5_files[:len(h5_files) - n_val]
+            val = h5_files[len(h5_files) - n_val:]
+            print(f"Found {len(h5_files)} episodes: {len(train)} train / {len(val)} val")
+            splits = {"train": self._generate_examples(train)}
+            if val:
+                splits["val"] = self._generate_examples(val)
+            return splits
+
+        def _generate_examples(self, h5_files):
+            for h5_path in h5_files:
+                steps, _, _ = load_episode(h5_path)
+                yield h5_path, {"steps": steps, "episode_metadata": {"file_path": h5_path}}
+
+
+if __name__ == "__main__":
+    folder = sys.argv[1] if len(sys.argv) > 1 else H5_DIR
+    files = find_h5_files(folder)
+    print(f"{len(files)} .h5 file(s) in {folder}")
+    allA = []
+    for p in files:
+        steps, instr, ep_dir = load_episode(p, with_images=False)
+        A = np.stack([s["action"] for s in steps])
+        allA.append(A)
+        print(f"  {os.path.basename(p)}: {len(steps)} steps, frames from {ep_dir}")
+        print(f"    instruction: {instr}")
+        print(f"    action min {A.min(0).round(2)}  max {A.max(0).round(2)}")

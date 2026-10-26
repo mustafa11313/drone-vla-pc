@@ -1,0 +1,8 @@
+__pycache__/
+*.key
+*.crt
+*.pem
+.env
+*.h5
+*.zip
+*.npy
