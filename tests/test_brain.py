@@ -42,3 +42,20 @@ def test_limits_from_openvla_statistics(tmp_path):
     p = tmp_path / "dataset_statistics.json"
     p.write_text(json.dumps(stats))
     assert limits_from_stats(str(p)) == [(0.0, 45.0), (-38.0, 35.0), (-100.0, 0.0), (-37.0, 54.0)]
+
+
+
+def test_landing_score_synthetic(tmp_path):
+    import numpy as np
+    from PIL import Image
+    from brain.landing_score import score
+
+    floor = np.full((400, 600, 3), 150, np.uint8)
+    floor[150:250, 250:350] = (210, 30, 30)              # red pad, 100 px wide = 50 cm, centre (300, 200)
+    after = floor.copy()
+    after[180:220, 230:310] = (40, 40, 40)               # drone, centre (270, 200): 30 px = 15 cm off
+    Image.fromarray(floor).save(tmp_path / "before.png")
+    Image.fromarray(after).save(tmp_path / "after.png")
+    result, _ = score(str(tmp_path / "before.png"), str(tmp_path / "after.png"), pad_cm=50)
+    assert abs(result["distance_cm"] - 15.0) < 1.0
+    assert result["on_pad"]

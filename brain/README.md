@@ -39,6 +39,16 @@ You fly; the phone shows the model's command next to your sticks; `logs/session_
 records both, with the delay of every part. Only after shadow flights look sensible:
 `--mode active --scale 0.5`, and press MODEL FLY on the phone.
 
+## 4. Landing score (overhead camera)
+
+A phone on a tripod or taped to the ceiling looks straight down at the pad and is not moved.
+Per flight: one photo before (pad only), one after landing.
+
+    python3 -m brain.landing_score before.jpg after.jpg --pad-cm 50 --debug check.png
+
+Prints the distance from the pad centre in cm and whether the drone is on the pad. Open
+check.png the first few times to see that it found the right things.
+
 ## Safety layers
 
 | Layer | Where | What |
