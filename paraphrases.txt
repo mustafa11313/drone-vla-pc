@@ -1,0 +1,14 @@
+# Training phrasings of the one task (idea V2). One per line; '#' lines are ignored.
+# The recorded sentence stays in the list so the model keeps knowing it.
+Take off, locate the red landing pad, and land on it.
+Find the red landing pad and land on it.
+Land on the red pad.
+Fly to the red landing pad and touch down on it.
+Look for the red pad, then land there.
+Locate the red square on the floor and land on top of it.
+Go to the red landing pad and land.
+Descend onto the red landing pad.
+Search for the red pad and set the drone down on it.
+Land the drone on the red marker.
+Move over the red landing pad and land.
+Approach the red pad and land on it carefully.

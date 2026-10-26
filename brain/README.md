@@ -1,4 +1,4 @@
-# PC brain: step 1, the safe loop
+# PC brain: the safe loop and the Round 2 tools
 
 ```
 phone app ──frames + telemetry (WebSocket, 10/s)──▶ bridge_server.py ──JPEG (HTTP)──▶ inference_server.py
@@ -48,6 +48,25 @@ Per flight: one photo before (pad only), one after landing.
 
 Prints the distance from the pad centre in cm and whether the drone is on the pad. Open
 check.png the first few times to see that it found the right things.
+
+## 5. Round 2 tools (data, model insight, evaluation)
+
+| Idea | Command | What it gives you |
+|---|---|---|
+| X10 recovery views | `DRONE_RECOVERY_VIEWS=2 tfds build` | Each train episode 2 more times, view shifted 5 % left / right, roll corrected back. Val unchanged. |
+| V2 paraphrases | `DRONE_PARAPHRASES=1 tfds build` | Train episodes get varied wordings (`paraphrases.txt`); `paraphrases_test.txt` is never trained on. |
+| D5 phase labels | `python3 -m brain.phases <episodes> --csv` | climb / search / approach / align / descend per step; the rehearsal now prints the error per phase. |
+| D1 coverage map | `python3 -m brain.coverage <episodes> --svg coverage.svg` | Which pad-vs-drone layouts have data (train / val), which are missing. |
+| X15 CNN baseline | `python3 cnn_baseline.py train <h5 folder> --out runs/cnn` | ResNet-18 on the same split; same table as `eval_val.py`; serve with `inference_server.py --cnn runs/cnn/best.pt`. |
+| M1 confidence | automatic (OpenVLA) | `/act` returns `confidence` (p and spread per stick); logged in `steps.csv`; `--max-spread 15` on the bridge hovers when the model is unsure. |
+| M4 what-if lab | `python3 -m brain.whatif --policy <url> <val episodes>` | Mirror, pad removed, shifted, dark / bright, other words, wrong task: how the command changes. |
+| E2 blind A/B | `--policy-b <url>` on the bridge, then `brain.ab_test` | Each MODEL FLY flight secretly uses A or B; score landings blind; unblind with a permutation test. |
+
+Both build options are off by default, so `tfds build` without them gives exactly the old
+dataset. Use a new dataset version folder (or delete the old one) when you switch them on.
+
+`python3 inference_server.py --mock --mock-seek` is a fake model that steers toward red
+pixels: handy to try the tools above without a GPU.
 
 ## Safety layers
 

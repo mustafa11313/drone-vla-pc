@@ -72,15 +72,20 @@ def pct(values, q):
 
 def run_model_only(policy_url, episodes):
     from brain.policy_client import PolicyClient
+    from brain.phases import PHASES, label_episode
     client = PolicyClient(policy_url, timeout_s=10)
     err = [[], [], [], []]
+    by_phase = {p: [] for p in PHASES}          # mean |error| over the 4 sticks, per step
     model_ms, total_ms = [], []
     for ep in episodes:
         steps = load_episode(ep)
-        for _, row, jpeg in steps:
+        labels = label_episode(ep, steps)
+        for (_, row, jpeg), lab in zip(steps, labels):
             sticks, m_ms, rt = client.act(jpeg)
-            for k, c in enumerate(CMD_COLS):
-                err[k].append(abs(sticks[k] - row[c]))
+            e = [abs(sticks[k] - row[c]) for k, c in enumerate(CMD_COLS)]
+            for k in range(4):
+                err[k].append(e[k])
+            by_phase[lab["phase"]].append(statistics.mean(e))
             model_ms.append(m_ms)
             total_ms.append(rt)
         print(f"{os.path.basename(ep.rstrip('/'))}: {len(steps)} frames")
@@ -88,6 +93,10 @@ def run_model_only(policy_url, episodes):
     print("stick      MAE (stick %)")
     for k, c in enumerate(CMD_COLS):
         print(f"{c[:-4]:9s} {statistics.mean(err[k]):8.1f}")
+    print("phase      MAE (all sticks)   steps   (labels from brain/phases.py)")
+    for p, v in by_phase.items():
+        if v:
+            print(f"{p:9s} {statistics.mean(v):8.1f}        {len(v):6d}")
     print(f"model time    p50 {pct(model_ms, .5):6.0f} ms   p95 {pct(model_ms, .95):6.0f} ms")
     print(f"with network  p50 {pct(total_ms, .5):6.0f} ms   p95 {pct(total_ms, .95):6.0f} ms"
           f"   -> at most {1000 / max(pct(total_ms, .5), 1):.1f} commands per second")

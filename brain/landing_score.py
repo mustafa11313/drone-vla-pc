@@ -15,8 +15,11 @@ into centimetres). The drone = what changed between the two photos. Result: dist
 between the pad centre and the drone centre, and whether the drone centre is on the pad.
 
 Only numpy + Pillow, no OpenCV. Keep the light constant between the two photos.
+
+Blind A/B flights (brain/ab_test.py): add --flight 7 --scores logs/ab_scores.csv to append the
+result to the score sheet; the A/B key is not needed (and should not be looked at) for this.
 """
-import argparse, json, math
+import argparse, csv, json, math, os
 
 import numpy as np
 from PIL import Image, ImageFilter
@@ -96,11 +99,22 @@ def main():
     ap.add_argument("--pad-cm", type=float, required=True, help="pad width (square) or diameter (round), cm")
     ap.add_argument("--round", action="store_true", help="the pad is round, not square")
     ap.add_argument("--debug", help="save a picture with the pad, the drone and the distance drawn in")
+    ap.add_argument("--flight", type=int, help="blind A/B flight number (see brain/ab_test.py)")
+    ap.add_argument("--scores", default="logs/ab_scores.csv", help="score sheet the --flight result goes to")
     args = ap.parse_args()
     result, dbg = score(args.before, args.after, args.pad_cm, square=not args.round)
     if args.debug:
         save_debug(args.debug, *dbg)
     print(json.dumps(result))
+    if args.flight is not None:
+        new = not os.path.exists(args.scores)
+        os.makedirs(os.path.dirname(args.scores) or ".", exist_ok=True)
+        with open(args.scores, "a", newline="") as f:
+            w = csv.writer(f)
+            if new:
+                w.writerow(["flight", "distance_cm", "on_pad"])
+            w.writerow([args.flight, result["distance_cm"], int(result["on_pad"])])
+        print(f"flight {args.flight} added to {args.scores}")
 
 
 if __name__ == "__main__":
