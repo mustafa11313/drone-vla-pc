@@ -85,7 +85,10 @@ class OpenVLAPolicy:
         generate = type(self.vla).generate.__get__(self.vla)
 
         def generate_with_scores(*a, **k):
-            out = generate(*a, **k, output_scores=True, return_dict_in_generate=True)
+            try:
+                out = generate(*a, **k, output_scores=True, return_dict_in_generate=True)
+            except Exception:                   # scores not supported: plain answer, no confidence
+                return generate(*a, **k)
             captured["scores"] = out.scores
             return out.sequences
 
