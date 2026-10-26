@@ -12,10 +12,12 @@ class PolicyClient:
         self.session = requests.Session()
         self.last_confidence = None      # {"p": [...], "spread_pct": [...]} of the last answer, or None
 
-    def act(self, jpeg):
-        """Returns (sticks in percent [pitch, roll, throttle, yaw], model_ms, round_trip_ms)."""
+    def act(self, jpeg, instruction=None):
+        """Returns (sticks in percent [pitch, roll, throttle, yaw], model_ms, round_trip_ms).
+        instruction: words for this frame (the phone's spoken mission); None = the default."""
         t0 = time.perf_counter()
-        r = self.session.post(self.url, data=jpeg, params=self.params, timeout=self.timeout,
+        params = {"instruction": instruction} if instruction else self.params
+        r = self.session.post(self.url, data=jpeg, params=params, timeout=self.timeout,
                               headers={"Content-Type": "image/jpeg"})
         r.raise_for_status()
         j = r.json()

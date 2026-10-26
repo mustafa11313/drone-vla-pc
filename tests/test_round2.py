@@ -86,3 +86,13 @@ def test_ab_report(tmp_path):
     assert r["A"]["mean_cm"] == pytest.approx(6.3, abs=0.1) and r["B"]["takeovers"] == 1
     assert r["p_value"] < 0.2
     assert ab_test.permutation_p([1, 2, 3], [1, 2, 3]) > 0.5
+
+
+def test_bridge_takes_spoken_mission(tmp_path):
+    from brain import bridge_server
+    args = bridge_server.parse(["--policy", "mock", "--log-dir", str(tmp_path)])
+    s = bridge_server.Session(args, bridge_server.MockPolicy(), None)
+    bridge_server.set_instruction(s, "  land on the red pad ")
+    assert s.instruction == "land on the red pad"
+    bridge_server.set_instruction(s, None)
+    assert s.instruction is None

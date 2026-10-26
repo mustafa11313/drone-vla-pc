@@ -18,7 +18,9 @@ Only the newest frame is used: if the model is still busy, older frames are drop
 counted), so commands never queue up and get stale.
 
 Every session writes logs/session_<date>_<time>/steps.csv (one row per command, with the
-latency of each part and the model's confidence) and events.csv (takeover, stop, landed, ...).
+latency of each part and the model's confidence) and events.csv (takeover, stop, landed,
+instruction, ...). The phone may send a spoken mission (MIC button); it goes to the model
+instead of the training sentence until the phone resets it.
 
 --max-spread 15 : when the model is unsure (OpenVLA's spread of pitch or roll above 15 stick
                   percent, see inference_server.py), send hover instead of its command (idea M1).
@@ -47,7 +49,7 @@ DEFAULT_LIMITS = [(0.0, 45.0), (-38.0, 35.0), (-100.0, 0.0), (-37.0, 54.0)]
 class MockPolicy:
     last_confidence = {"p": [0.9, 0.9, 0.9, 0.9], "spread_pct": [3.0, 3.0, 3.0, 0.0]}
 
-    def act(self, jpeg):
+    def act(self, jpeg, instruction=None):
         time.sleep(0.05)
         return [10.0, 0.0, -20.0, 0.0], 50.0, 50.0
 
@@ -111,6 +113,7 @@ class Session:
         self.events = csv.writer(open(os.path.join(self.dir, "events.csv"), "w", newline=""))
         self.events.writerow(["time", "seq", "event", "detail"])
         self.flight = ""              # blind A/B flight number, "" when not testing
+        self.instruction = None       # spoken mission from the phone (idea V1); None = training sentence
 
     def event(self, name, seq="", detail=""):
         self.events.writerow([datetime.now().isoformat(timespec="milliseconds"), seq, name, detail])
@@ -127,7 +130,7 @@ async def worker(ws, s):
         t_start = time.perf_counter()
         policy = s.ab.policy() if s.ab else s.policy
         try:
-            raw, model_ms, _ = await loop.run_in_executor(None, policy.act, jpeg)
+            raw, model_ms, _ = await loop.run_in_executor(None, policy.act, jpeg, s.instruction)
         except Exception as e:
             s.event("policy_error", header.get("seq"), str(e))
             continue                    # no answer: the phone's watchdog will hover the drone
@@ -153,6 +156,14 @@ async def worker(ws, s):
                 f.write(jpeg)
 
 
+def set_instruction(s, text):
+    """The phone sends what the pilot said (MIC button). Passed to the model as it is: a model
+    trained only on the one sentence may not understand other words (train with
+    DRONE_PARAPHRASES=1 for that, idea V2)."""
+    s.instruction = (text or "").strip() or None
+    s.event("instruction", detail=s.instruction or "(training sentence)")
+
+
 async def handle(ws, s):
     await ws.send(json.dumps({"type": "config", "mode": s.args.mode, "limits_pct": s.gov.limits_abs(),
                               "land_height_m": s.args.land_height}))
@@ -162,6 +173,8 @@ async def handle(ws, s):
         async for msg in ws:
             if isinstance(msg, bytes):
                 header, jpeg = unpack_frame(msg)
+                if "instruction" in header and header["instruction"] != s.instruction:
+                    set_instruction(s, header["instruction"])
                 if s.new_frame.is_set():
                     s.dropped += 1           # the previous frame was never processed
                 s.latest = (header, jpeg, time.perf_counter())
@@ -176,6 +189,8 @@ async def handle(ws, s):
                         print(f"[A/B] flight {s.flight} (arm hidden in {s.ab.key_path})")
                     s.event(m.get("name", "?"), m.get("seq", ""),
                             json.dumps({**m, "flight": s.flight}) if s.ab else json.dumps(m))
+                elif m.get("type") == "instruction":
+                    set_instruction(s, m.get("text"))
                 elif m.get("type") == "hello":
                     s.event("hello", detail=json.dumps(m))
     except websockets.ConnectionClosed:
