@@ -7,3 +7,6 @@ numpy
 pillow
 flask
 pytest
+# Optional: AI judge (brain/judge.py) and Arabic translation (brain/language.py); key in ANTHROPIC_API_KEY
+anthropic>=2.3
+pydantic>=2

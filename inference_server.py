@@ -32,7 +32,7 @@ crops images randomly; OpenVLA's own evaluation code then centre-crops at test
 time (90 % of the area). --center-crop does the same and is on by default.
 eval_val.py does NOT crop, so its numbers may be slightly pessimistic.
 """
-import argparse, io, json, os, threading, time
+import argparse, hashlib, io, json, os, threading, time
 
 import numpy as np
 from flask import Flask, jsonify, request
@@ -192,7 +192,14 @@ def act():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "inference server running", "model": policy.name, "steps_served": served})
+    info = {"status": "inference server running", "model": policy.name, "steps_served": served}
+    ckpt = getattr(policy, "ckpt", None)
+    if ckpt:          # which checkpoint and dataset produced a flight (idea X16, brain/tracking.py)
+        stats = os.path.join(ckpt, "dataset_statistics.json")
+        if os.path.exists(stats):
+            info["dataset_stats_sha256"] = hashlib.sha256(open(stats, "rb").read()).hexdigest()[:16]
+        info["center_crop"] = getattr(policy, "center_crop", None)
+    return jsonify(info)
 
 
 def main():
