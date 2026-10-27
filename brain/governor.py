@@ -30,12 +30,13 @@ class Governor:
     def reset(self):
         self.last = [0.0, 0.0, 0.0, 0.0]
 
-    def apply(self, sticks):
+    def apply(self, sticks, authority=1.0):
+        """authority < 1 shrinks the limits for this command (e.g. 0.5 in an unfamiliar room)."""
         out = []
         for i, (v, (lo, hi), prev) in enumerate(zip(sticks, self.limits, self.last)):
             if i == 3 and not self.allow_yaw:
                 v = 0.0
-            v = min(max(v, lo), hi)
+            v = min(max(v, lo * authority), hi * authority)
             v = min(max(v, prev - self.max_step), prev + self.max_step)
             out.append(round(v, 1))
         self.last = out

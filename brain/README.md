@@ -1,4 +1,4 @@
-# PC brain: the safe loop and the Round 2 tools
+# PC brain: the safe loop and the Round 2 and Round 4 tools
 
 ```
 phone app ──frames + telemetry (WebSocket, 10/s)──▶ bridge_server.py ──JPEG (HTTP)──▶ inference_server.py
@@ -68,6 +68,19 @@ dataset. Use a new dataset version folder (or delete the old one) when you switc
 `python3 inference_server.py --mock --mock-seek` is a fake model that steers toward red
 pixels: handy to try the tools above without a GPU.
 
+## 6. Round 4 tools (no extra flights needed)
+
+| Idea | Run | What it gives |
+|---|---|---|
+| X7 hybrid brain | bridge `--hybrid 1.5` (or `--policy servo` = classic only) | Below 1.5 m with the pad in view, a classic pad-centring controller (`brain/servo.py`) flies the last part; `steps.csv` column `source` says who flew. Try it without a drone: `python3 -m brain.rehearsal --policy servo <episodes>`. |
+| X12 unfamiliar room | `python3 -m brain.ood build <train episodes> --out ood_ref.npz`, then bridge `--ood ood_ref.npz` | Each frame gets a "how familiar" score (`ood_score`). 5 unfamiliar frames in a row: event `ood_on`, the model keeps only `--ood-authority` (0.5) of its stick range, and the phone says "Room looks unfamiliar". `python3 -m brain.ood score ood_ref.npz <folders>` checks a new room before flying. |
+| X16 tracking | automatic | Every session folder gets `manifest.json`: PC code commit, checkpoint and dataset hash (from the server), app version, all bridge settings. `python3 -m brain.tracking logs/` lists them. |
+| L4 + L6 failure library | thumbs up / down on the phone after each MODEL FLY, then `python3 -m brain.failures logs/` | Failed flights grouped by cause (pad lost, overshoot, drift, unsure, unfamiliar room, ...) with what to record next. |
+| X13 AI judge | bridge `--save-frames`, then `python3 -m brain.judge --session logs/session_...` | Claude (`claude-opus-5-5`) looks at the end of each flight: on the pad or not, and why. Adds `logs/judge.csv`, which `brain.failures` uses. Needs `pip install anthropic pydantic` and `ANTHROPIC_API_KEY` set in your own terminal. |
+| V8 Arabic commands | say "lang ar" on the phone, then MIC | Arabic "land on the red pad" becomes the English training sentence (word list, offline). Other Arabic is translated by Claude if `ANTHROPIC_API_KEY` is set, else the training sentence is used. `events.csv` keeps what was heard and what the model got. |
+
+Every MODEL FLY press is now a numbered flight (`flight` in `steps.csv` and in every event).
+
 ## Safety layers
 
 | Layer | Where | What |
@@ -77,6 +90,7 @@ pixels: handy to try the tools above without a GPU.
 | Watchdog | app | No fresh command for 0.5 s: hover. |
 | Takeover | app | Moving a real stick switches the model off at once. |
 | STOP | app | Button (and later the voice word) stops the model and hovers. |
+| Unfamiliar room | `--ood` | Model's stick range halved while the scene does not look like the training data. |
 | Landing | app | Below `--land-height` while descending: DJI auto-landing (the training data ends where auto-landing starts). |
 
 ## Tests

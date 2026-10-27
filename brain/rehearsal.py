@@ -73,7 +73,11 @@ def pct(values, q):
 def run_model_only(policy_url, episodes):
     from brain.policy_client import PolicyClient
     from brain.phases import PHASES, label_episode
-    client = PolicyClient(policy_url, timeout_s=10)
+    if policy_url == "servo":                  # the classic pad-centring controller (idea X7)
+        from brain.servo import ServoPolicy
+        client = ServoPolicy()
+    else:
+        client = PolicyClient(policy_url, timeout_s=10)
     err = [[], [], [], []]
     by_phase = {p: [] for p in PHASES}          # mean |error| over the 4 sticks, per step
     model_ms, total_ms = [], []
@@ -148,7 +152,7 @@ def main():
     ap = argparse.ArgumentParser(description="ground rehearsal with recorded episodes")
     ap.add_argument("episodes", nargs="+", help="episode folders (telemetry CSV + frames/)")
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--policy", help="inference server URL: test the model only")
+    g.add_argument("--policy", help="inference server URL, or 'servo': test the model only")
     g.add_argument("--bridge", help="bridge WebSocket URL: pretend to be the phone")
     ap.add_argument("--rate", type=float, default=10.0, help="frames per second sent to the bridge")
     args = ap.parse_args()

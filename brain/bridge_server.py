@@ -25,6 +25,14 @@ instead of the training sentence until the phone resets it.
 --max-spread 15 : when the model is unsure (OpenVLA's spread of pitch or roll above 15 stick
                   percent, see inference_server.py), send hover instead of its command (idea M1).
 
+Round 4 options:
+--hybrid 1.5      : below 1.5 m with the pad in view, the classic pad-centring controller
+                    flies instead of the model (idea X7, brain/servo.py). --policy servo = classic only.
+--ood ref.npz     : warn and lower the model's authority in an unfamiliar room (X12, brain/ood.py).
+Every session also writes manifest.json (X16, brain/tracking.py), numbers each model flight
+(MODEL FLY press) and logs the pilot's thumbs up / down for it (L4, used by brain/failures.py).
+Arabic commands are turned into the English instruction (V8, brain/language.py).
+
 Blind A/B test of two checkpoints (idea E2), see brain/ab_test.py:
 
     python3 -m brain.bridge_server --policy http://<gpu>:8000 --policy-b http://<gpu>:8001 --mode active
@@ -39,7 +47,11 @@ from datetime import datetime
 import websockets
 
 from brain.governor import Governor, limits_from_stats
+from brain.language import to_instruction
+from brain.phases import pad_in_frame
 from brain.protocol import unpack_frame
+from brain.servo import Servo, ServoPolicy
+from brain.tracking import add_to_manifest, write_manifest
 
 # Used when no dataset_statistics.json is given: roughly the 1 %-99 % range of the 50 pilot
 # episodes (project report, section 5), in stick percent. Throttle was never positive.
@@ -91,10 +103,12 @@ class BlindAB:
 
 
 class Session:
-    def __init__(self, args, policy, governor, ab=None):
+    def __init__(self, args, policy, governor, ab=None, familiarity=None):
         self.args = args
         self.policy = policy
         self.ab = ab                  # BlindAB or None
+        self.familiarity = familiarity  # ood.Familiarity or None (idea X12)
+        self.servo = Servo() if args.hybrid else None
         self.gov = governor
         self.latest = None            # (header, jpeg, t_recv)
         self.new_frame = asyncio.Event()
@@ -109,11 +123,14 @@ class Session:
                              "sent_pitch", "sent_roll", "sent_throttle", "sent_yaw",
                              "wait_ms", "policy_ms", "model_ms", "pc_ms", "dropped_before",
                              "p_pitch", "p_roll", "p_throttle", "p_yaw",
-                             "spread_pitch", "spread_roll", "spread_throttle", "spread_yaw", "unsure"])
+                             "spread_pitch", "spread_roll", "spread_throttle", "spread_yaw", "unsure",
+                             "source", "pad_visible", "pad_x", "pad_y", "ood_score", "unfamiliar"])
         self.events = csv.writer(open(os.path.join(self.dir, "events.csv"), "w", newline=""))
         self.events.writerow(["time", "seq", "event", "detail"])
-        self.flight = ""              # blind A/B flight number, "" when not testing
+        self.flight = ""              # model flight number (MODEL FLY presses), "" before the first one
+        self.flights = 0
         self.instruction = None       # spoken mission from the phone (idea V1); None = training sentence
+        write_manifest(self.dir, args)
 
     def event(self, name, seq="", detail=""):
         self.events.writerow([datetime.now().isoformat(timespec="milliseconds"), seq, name, detail])
@@ -128,40 +145,72 @@ async def worker(ws, s):
         header, jpeg, t_recv = s.latest
         dropped, s.dropped = s.dropped, 0
         t_start = time.perf_counter()
+        tel = header.get("telemetry", {})
         policy = s.ab.policy() if s.ab else s.policy
+        # X7: below the hand-over height with the pad in view, the classic controller flies
+        servo_cmd = None
+        if s.servo and num(tel.get("height_m"), 99.0) <= s.args.hybrid:
+            servo_cmd = await loop.run_in_executor(None, s.servo.command, jpeg)
         try:
-            raw, model_ms, _ = await loop.run_in_executor(None, policy.act, jpeg, s.instruction)
+            if servo_cmd is not None:
+                raw, model_ms, source = servo_cmd, 0.0, "servo"
+            else:
+                raw, model_ms, _ = await loop.run_in_executor(None, policy.act, jpeg, s.instruction)
+                source = "servo" if isinstance(policy, ServoPolicy) else "model"
         except Exception as e:
             s.event("policy_error", header.get("seq"), str(e))
             continue                    # no answer: the phone's watchdog will hover the drone
         policy_ms = (time.perf_counter() - t_start) * 1000
+        pad = (s.servo.last_pad if servo_cmd is not None else None) or pad_in_frame(jpeg)
+        ood_score, unfamiliar = "", False
+        if s.familiarity:
+            ood_score, unfamiliar, changed = s.familiarity.update(jpeg)
+            ood_score = round(ood_score, 3)
+            if changed:
+                s.event("ood_on" if unfamiliar else "ood_off", header.get("seq"),
+                        json.dumps({"score": ood_score, "flight": s.flight}))
         conf = getattr(policy, "last_confidence", None) or {}
         p, spread = conf.get("p") or [""] * 4, conf.get("spread_pct") or [""] * 4
         unsure = bool(s.args.max_spread and conf.get("spread_pct")
                       and max(spread[0], spread[1]) > s.args.max_spread)
-        sent = s.gov.apply([0.0, 0.0, 0.0, 0.0] if unsure else raw)
+        authority = s.args.ood_authority if unfamiliar else 1.0
+        sent = s.gov.apply([0.0, 0.0, 0.0, 0.0] if unsure else raw, authority)
         pc_ms = (time.perf_counter() - t_recv) * 1000
         cmd = {"type": "cmd", "seq": header.get("seq"), "t_ms": header.get("t_ms"), "sticks": sent,
                "mode": s.args.mode, "model_ms": round(model_ms, 1), "pc_ms": round(pc_ms, 1),
-               "confidence": conf or None, "unsure": unsure}
+               "confidence": conf or None, "unsure": unsure, "unfamiliar": unfamiliar, "source": source}
         await ws.send(json.dumps(cmd))
-        tel = header.get("telemetry", {})
         pilot = tel.get("pilot", ["", "", "", ""])
         s.steps.writerow([header.get("seq"), s.flight, s.args.mode, tel.get("height_m", ""), *pilot,
                           *[round(v, 1) for v in raw], *sent,
                           round((t_start - t_recv) * 1000, 1), round(policy_ms, 1),
-                          round(model_ms, 1), round(pc_ms, 1), dropped, *p, *spread, int(unsure)])
+                          round(model_ms, 1), round(pc_ms, 1), dropped, *p, *spread, int(unsure),
+                          source, int(pad[0]), round(pad[1], 3), round(pad[2], 3), ood_score, int(unfamiliar)])
         if s.args.save_frames:
             with open(os.path.join(s.dir, "frames", f"{header.get('seq', 0):06d}.jpg"), "wb") as f:
                 f.write(jpeg)
 
 
+def num(x, default=0.0):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
 def set_instruction(s, text):
-    """The phone sends what the pilot said (MIC button). Passed to the model as it is: a model
-    trained only on the one sentence may not understand other words (train with
-    DRONE_PARAPHRASES=1 for that, idea V2)."""
-    s.instruction = (text or "").strip() or None
-    s.event("instruction", detail=s.instruction or "(training sentence)")
+    """The phone sends what the pilot said (MIC button). English goes to the model as it is: a
+    model trained only on the one sentence may not understand other words (train with
+    DRONE_PARAPHRASES=1 for that, idea V2). Arabic becomes the English instruction (V8)."""
+    heard = (text or "").strip() or None
+    s.heard = heard
+    if heard is None:
+        s.instruction = None
+        s.event("instruction", detail="(training sentence)")
+        return
+    s.instruction, how = to_instruction(heard)
+    s.event("instruction", detail=json.dumps({"heard": heard, "instruction": s.instruction, "how": how},
+                                             ensure_ascii=False))
 
 
 async def handle(ws, s):
@@ -173,8 +222,8 @@ async def handle(ws, s):
         async for msg in ws:
             if isinstance(msg, bytes):
                 header, jpeg = unpack_frame(msg)
-                if "instruction" in header and header["instruction"] != s.instruction:
-                    set_instruction(s, header["instruction"])
+                if "instruction" in header and header["instruction"] != getattr(s, "heard", None):
+                    await asyncio.get_running_loop().run_in_executor(None, set_instruction, s, header["instruction"])
                 if s.new_frame.is_set():
                     s.dropped += 1           # the previous frame was never processed
                 s.latest = (header, jpeg, time.perf_counter())
@@ -184,15 +233,22 @@ async def handle(ws, s):
                 if m.get("type") == "event":
                     if m.get("name") in ("takeover", "stop", "landed"):
                         s.gov.reset()
-                    if m.get("name") == "armed" and s.ab:
-                        s.flight = s.ab.new_flight(s.dir)
-                        print(f"[A/B] flight {s.flight} (arm hidden in {s.ab.key_path})")
+                        if s.servo:
+                            s.servo.reset()
+                    if m.get("name") == "armed":
+                        if s.ab:
+                            s.flight = s.ab.new_flight(s.dir)
+                            print(f"[A/B] flight {s.flight} (arm hidden in {s.ab.key_path})")
+                        else:
+                            s.flights += 1
+                            s.flight = s.flights
                     s.event(m.get("name", "?"), m.get("seq", ""),
-                            json.dumps({**m, "flight": s.flight}) if s.ab else json.dumps(m))
+                            json.dumps({**m, "flight": s.flight}, ensure_ascii=False))
                 elif m.get("type") == "instruction":
-                    set_instruction(s, m.get("text"))
+                    await asyncio.get_running_loop().run_in_executor(None, set_instruction, s, m.get("text"))
                 elif m.get("type") == "hello":
                     s.event("hello", detail=json.dumps(m))
+                    add_to_manifest(s.dir, "app", {k: v for k, v in m.items() if k != "type"})
     except websockets.ConnectionClosed:
         pass
     finally:
@@ -203,6 +259,8 @@ async def handle(ws, s):
 async def main_async(args):
     if args.policy == "mock":
         policy = MockPolicy()
+    elif args.policy == "servo":
+        policy = ServoPolicy()
     else:
         from brain.policy_client import PolicyClient
         policy = PolicyClient(args.policy)
@@ -218,8 +276,13 @@ async def main_async(args):
           f"limits%={governor.limits_abs()} "
           f"listening on ws://0.0.0.0:{args.port}")
 
+    familiarity = None
+    if args.ood:
+        from brain.ood import Familiarity
+        familiarity = Familiarity(args.ood)
+
     async def handler(ws, *_):
-        s = Session(args, policy, governor, ab)
+        s = Session(args, policy, governor, ab, familiarity)
         governor.reset()
         print(f"[BRIDGE] logging to {s.dir}")
         await handle(ws, s)
@@ -230,7 +293,7 @@ async def main_async(args):
 
 def parse(argv=None):
     ap = argparse.ArgumentParser(description="PC brain: phone <-> model bridge")
-    ap.add_argument("--policy", required=True, help="inference server URL, or 'mock'")
+    ap.add_argument("--policy", required=True, help="inference server URL, 'servo' (classic) or 'mock'")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--mode", choices=["shadow", "active"], default="shadow")
     ap.add_argument("--stats", help="dataset_statistics.json of the checkpoint (stick limits)")
@@ -241,6 +304,11 @@ def parse(argv=None):
     ap.add_argument("--max-spread", type=float, default=0.0,
                     help="hover when the model's pitch or roll spread is above this (stick %%); 0 = off")
     ap.add_argument("--policy-b", help="second inference server URL: blind A/B test per flight")
+    ap.add_argument("--hybrid", type=float, default=0.0,
+                    help="below this height (m) with the pad in view, the classic controller flies; 0 = off")
+    ap.add_argument("--ood", help="unfamiliar-scene reference from brain/ood.py build")
+    ap.add_argument("--ood-authority", type=float, default=0.5,
+                    help="share of the stick limits the model keeps in an unfamiliar scene")
     ap.add_argument("--log-dir", default="logs")
     ap.add_argument("--save-frames", action="store_true")
     return ap.parse_args(argv)
