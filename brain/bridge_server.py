@@ -124,7 +124,7 @@ class Session:
                              "wait_ms", "policy_ms", "model_ms", "pc_ms", "dropped_before",
                              "p_pitch", "p_roll", "p_throttle", "p_yaw",
                              "spread_pitch", "spread_roll", "spread_throttle", "spread_yaw", "unsure",
-                             "source", "pad_visible", "pad_x", "pad_y", "ood_score", "unfamiliar"])
+                             "source", "pad_visible", "pad_x", "pad_y", "ood_score", "unfamiliar", "phone_pad"])
         self.events = csv.writer(open(os.path.join(self.dir, "events.csv"), "w", newline=""))
         self.events.writerow(["time", "seq", "event", "detail"])
         self.flight = ""              # model flight number (MODEL FLY presses), "" before the first one
@@ -185,7 +185,8 @@ async def worker(ws, s):
                           *[round(v, 1) for v in raw], *sent,
                           round((t_start - t_recv) * 1000, 1), round(policy_ms, 1),
                           round(model_ms, 1), round(pc_ms, 1), dropped, *p, *spread, int(unsure),
-                          source, int(pad[0]), round(pad[1], 3), round(pad[2], 3), ood_score, int(unfamiliar)])
+                          source, int(pad[0]), round(pad[1], 3), round(pad[2], 3), ood_score, int(unfamiliar),
+                          int(bool((header.get("pad") or {}).get("visible"))) if "pad" in header else ""])
         if s.args.save_frames:
             with open(os.path.join(s.dir, "frames", f"{header.get('seq', 0):06d}.jpg"), "wb") as f:
                 f.write(jpeg)
