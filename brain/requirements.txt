@@ -1,4 +1,5 @@
 # PC brain (laptop). The inference server runs in the cluster env "openvla" and also needs flask.
+# cnn_baseline.py also needs torch + torchvision (already in the cluster env "openvla").
 websockets>=10
 requests
 pandas
