@@ -1,0 +1,7 @@
+# Held-out phrasings, NEVER used in training (idea V2). Use one with
+#   inference_server.py ...  then  /act?instruction=<phrase>
+# to test whether the model understands the task or only memorised one sentence.
+Please put the drone down on the red pad.
+Head for the red target and land.
+Touch down on the red landing mat.
+Your goal is the red pad: land on it.
