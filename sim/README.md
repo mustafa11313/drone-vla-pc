@@ -41,23 +41,29 @@ skill flew), `decisions.jsonl` (every brain decision with its answer time and re
 | `brain/skills.py` | The skills: hover, rotate, climb, move, vla, servo, land. They only use what the real drone has (picture, height, speeds, heading), so the same code can later run in the bridge. |
 | `brain/pilot.py` | `ClaudePilot` (structured output: one `Decision` per call, system prompt cached, `effort=low` for speed) and `ScriptedPilot` (the rule-based baseline). |
 
-## First results (fake VLA, not the real model)
+## Results (fake VLA, not the real model)
 
-20 missions each, same seeds, `--policy seek` (a hand-made controller standing in for the VLA):
+20 missions each, same seeds, `--policy seek` (a hand-made controller standing in for the VLA).
+Camera 62° wide, lab behind the net from the Blender probes:
 
 | Arm | Landed on the pad | Other outcomes |
 |---|---|---|
 | no brain, fake VLA alone | 11 / 20 | 9 hit the net (no search: it flies off when the pad is not in view) |
-| scripted brain + fake VLA + servo, servo target 0.75 | 20 / 20 | – |
-| scripted brain + servo only, servo target 0.75 | 20 / 20 | – |
-| scripted brain + servo only, servo target 0.55 (current default) | 1 / 20 | 19 landed about 35 cm short of the pad |
+| scripted brain + fake VLA + servo, servo target 0.75 | 18 / 20 | 2 hit the net |
+| scripted brain + servo only, servo target 0.75 | 19 / 20 | 1 hit the net |
+| scripted brain + servo only, servo target 0.55 (current default) | 2 / 20 | 17 landed next to the pad, 1 hit the net |
 
-The last line is a finding about `brain/servo.py`: with the camera 50° down, holding the pad at
-`TARGET_Y = 0.55` while descending leaves it about half the height ahead of the drone, and
-DJI's auto-landing at 0.6 m then comes down short. In the simulator `0.75` works. This depends
-on the simulated camera matching the real one (field of view, gimbal angle), so check it in
-shadow mode (`steps.csv`, `pad_y` when the pilot is right above the pad) before changing the
-default.
+(With the first camera model, 74° and photo walls, the two 0.75 arms were 20 / 20.)
+
+**Servo target.** With the camera 50° down, holding the pad at `TARGET_Y = 0.55` while
+descending leaves it ahead of the drone, and DJI's auto-landing at 0.6 m then comes down short.
+`0.75` works in the simulator; check it in shadow mode before changing the default.
+
+**Red tape fools the pad detector.** All the net hits in the brain arms are the same mission
+(seed 13): facing away from the pad, the drone sees the red/white floor tape of the lab through
+the net, `brain/phases.pad_in_frame` reports the pad (0.4 % of the picture), and the servo flies
+toward it into the net. The real lab has that tape too. A minimum blob size or a shape check in
+`pad_in_frame` would avoid it.
 
 ## The lab in 3D (Blender)
 
