@@ -1,0 +1,626 @@
+"""
+build_lab.py  -  the lab around the flight cage as a real 3D scene in Blender.
+
+    pip install bpy                       # Blender as a Python module (no GPU needed)
+    python3 sim/blender/build_lab.py --save sim/blender/lab.blend --previews out/
+
+Builds everything from simple shapes, placed from the lab video:
+
+    cage       2 x 2 m, 3 m high, black posts and top frame, black rope net (sagging, with
+               the extra net lying on the floor), black worn puzzle mats inside, the pad
+    room       light grey floor with red/white tape, white walls, windows, ceiling ducts,
+               pipes and strip lights
+    around     north (behind the cage): bench with machines, small yellow robot, grey cabinet
+               south (where you stand): wooden desk with blue drawers, laptop, second desk
+               with the teach pendant and monitor
+               west: fume extractor, then the robot area (green robot, white robot on a blue
+               wrapped pallet, cobot table)
+
+Coordinates: metres, x = east, y = north, z = up, cage centre on the floor = (0, 0, 0).
+All positions are estimates from the video; change them in LAYOUT below.
+"""
+import argparse, math, os, sys
+
+import numpy as np
+import bpy
+from mathutils import Vector
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TEX = os.path.join(HERE, "tex")
+SIM_TEX = os.path.join(HERE, "..", "textures")
+
+CAGE_HALF, CAGE_H = 1.0, 3.0
+ROOM = dict(xmin=-8.0, xmax=6.0, ymin=-7.0, ymax=2.3, h=4.8)
+
+# ---------------------------------------------------------------- textures (numpy)
+
+
+def _save(name, arr):
+    from PIL import Image
+    os.makedirs(TEX, exist_ok=True)
+    p = os.path.join(TEX, name)
+    Image.fromarray(arr).save(p)
+    return p
+
+
+def make_net_texture(px=1024, cells=19, strand=0.055, seed=0):
+    """RGBA square rope mesh: black strands, transparent holes. `cells` holes per texture."""
+    rng = np.random.default_rng(seed)
+    y, x = np.mgrid[0:px, 0:px] / px * cells
+    # slight wobble so the mesh is not perfectly regular
+    x = x + 0.12 * np.sin(y * 0.9 + rng.uniform(0, 6)) + 0.05 * np.sin(y * 3.1) + 0.04 * np.sin(x * 2.3 + y * 1.7)
+    y = y + 0.12 * np.sin(x * 0.8 + rng.uniform(0, 6)) + 0.05 * np.sin(x * 2.9) + 0.04 * np.sin(y * 2.1 + x * 1.3)
+    d = np.minimum(np.abs(x - np.round(x)), np.abs(y - np.round(y)))
+    knot = (np.abs(x - np.round(x)) < strand * 1.6) & (np.abs(y - np.round(y)) < strand * 1.6)
+    a = ((d < strand) | knot).astype(np.float32)
+    rgba = np.zeros((px, px, 4), np.uint8)
+    rgba[..., :3] = 14
+    rgba[..., 3] = (a * 255).astype(np.uint8)
+    return _save("net.png", rgba)
+
+
+def make_mat_texture(px_per_m=400, tile=0.6, n=4, seed=1):
+    """Black EVA puzzle mats (n x n tiles of `tile` m), worn lighter where people walk."""
+    from PIL import Image, ImageFilter
+    rng = np.random.default_rng(seed)
+    N = int(n * tile * px_per_m)
+    y, x = np.mgrid[0:N, 0:N] / px_per_m
+    base = np.full((N, N), 0.10, np.float32)
+    # fine foam grain
+    base += rng.normal(0, 0.012, (N, N)).astype(np.float32)
+    # wear: big soft lighter patches
+    w = Image.fromarray((rng.random((6, 6)) * 255).astype(np.uint8)).resize((N, N), Image.BICUBIC)
+    w = np.asarray(w.filter(ImageFilter.GaussianBlur(N / 20)), np.float32) / 255
+    base *= 0.75 + 0.7 * w
+    # scuffs
+    for _ in range(140):
+        cx, cy, L, ang = rng.uniform(0, N), rng.uniform(0, N), rng.uniform(10, 80), rng.uniform(0, math.pi)
+        t = np.linspace(-L / 2, L / 2, int(L))
+        xs = (cx + t * math.cos(ang)).astype(int) % N
+        ys = (cy + t * math.sin(ang)).astype(int) % N
+        base[ys, xs] += 0.04
+    # puzzle seams with teeth
+    u, v = x / tile, y / tile
+    tooth = 0.06 * np.sign(np.sin(v * math.pi * 8))
+    seam_x = np.abs((u + tooth) - np.round(u + tooth)) * tile < 0.004
+    tooth = 0.06 * np.sign(np.sin(u * math.pi * 8))
+    seam_y = np.abs((v + tooth) - np.round(v + tooth)) * tile < 0.004
+    base[seam_x | seam_y] *= 0.45
+    g = np.clip(base, 0, 1)
+    rgb = (np.stack([g, g * 0.98, g * 0.96], -1) * 255).astype(np.uint8)
+    return _save("mats.png", rgb), n * tile
+
+
+def make_lab_floor_texture(px=1024, size=4.0, seed=2):
+    """Light grey epoxy floor with faint marks."""
+    from PIL import Image, ImageFilter
+    rng = np.random.default_rng(seed)
+    g = np.full((px, px), 0.78, np.float32) + rng.normal(0, 0.01, (px, px)).astype(np.float32)
+    w = Image.fromarray((rng.random((8, 8)) * 255).astype(np.uint8)).resize((px, px), Image.BICUBIC)
+    g += (np.asarray(w.filter(ImageFilter.GaussianBlur(40)), np.float32) / 255 - 0.5) * 0.06
+    for _ in range(60):
+        cx, cy, L, ang = rng.uniform(0, px), rng.uniform(0, px), rng.uniform(20, 160), rng.uniform(0, math.pi)
+        t = np.linspace(-L / 2, L / 2, int(L))
+        g[((cy + t * math.sin(ang)).astype(int) % px), ((cx + t * math.cos(ang)).astype(int) % px)] -= 0.12
+    g = np.clip(g, 0, 1)
+    return _save("labfloor.png", (np.stack([g, g, g * 0.98], -1) * 255).astype(np.uint8)), size
+
+
+# ---------------------------------------------------------------- materials
+
+
+def mat_color(name, rgb, rough=0.6, metal=0.0, emit=0.0):
+    m = bpy.data.materials.get(name)
+    if m:
+        return m
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    b = m.node_tree.nodes["Principled BSDF"]
+    b.inputs["Base Color"].default_value = (*rgb, 1)
+    b.inputs["Roughness"].default_value = rough
+    b.inputs["Metallic"].default_value = metal
+    if emit:
+        b.inputs["Emission Color"].default_value = (*rgb, 1)
+        b.inputs["Emission Strength"].default_value = emit
+    return m
+
+
+def mat_image(name, path, scale=1.0, alpha=False, rough=0.8, gain=1.0):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    b.inputs["Roughness"].default_value = rough
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = bpy.data.images.load(path)
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    mp = nt.nodes.new("ShaderNodeMapping")
+    mp.inputs["Scale"].default_value = (1 / scale, 1 / scale, 1)
+    nt.links.new(tc.outputs["Generated" if scale is None else "Object"], mp.inputs["Vector"])
+    nt.links.new(mp.outputs["Vector"], tex.inputs["Vector"])
+    if gain != 1.0:
+        mul = nt.nodes.new("ShaderNodeMix")
+        mul.data_type = "RGBA"
+        mul.blend_type = "MULTIPLY"
+        mul.inputs["Factor"].default_value = 1.0
+        nt.links.new(tex.outputs["Color"], mul.inputs[6])
+        mul.inputs[7].default_value = (gain, gain, gain, 1)
+        nt.links.new(mul.outputs[2], b.inputs["Base Color"])
+    else:
+        nt.links.new(tex.outputs["Color"], b.inputs["Base Color"])
+    if alpha:
+        nt.links.new(tex.outputs["Alpha"], b.inputs["Alpha"])
+        pass  # Cycles uses the alpha directly
+    return m
+
+
+def mat_uv_image(name, path, rough=0.6, gain=1.0):
+    """Image mapped once over the object's UVs (for the pad)."""
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    nt = m.node_tree
+    b = nt.nodes["Principled BSDF"]
+    b.inputs["Roughness"].default_value = rough
+    tex = nt.nodes.new("ShaderNodeTexImage")
+    tex.image = bpy.data.images.load(path)
+    mul = nt.nodes.new("ShaderNodeMix")
+    mul.data_type = "RGBA"
+    mul.blend_type = "MULTIPLY"
+    mul.inputs["Factor"].default_value = 1.0
+    nt.links.new(tex.outputs["Color"], [i for i in mul.inputs if i.identifier == "A_Color"][0])
+    [i for i in mul.inputs if i.identifier == "B_Color"][0].default_value = (gain, gain, gain, 1)
+    nt.links.new([o for o in mul.outputs if o.identifier == "Result_Color"][0], b.inputs["Base Color"])
+    return m
+
+
+# ---------------------------------------------------------------- shapes
+
+
+def _finish(obj, mat, name):
+    obj.name = name
+    if mat:
+        obj.data.materials.append(mat)
+    return obj
+
+
+def box(name, size, loc, mat, rot_z=0.0):
+    """size = (sx, sy, sz); loc = centre of the bottom face."""
+    sx, sy, sz = size
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(loc[0], loc[1], loc[2] + sz / 2))
+    o = bpy.context.object
+    o.scale = (sx, sy, sz)
+    o.rotation_euler[2] = math.radians(rot_z)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return _finish(o, mat, name)
+
+
+def cyl(name, r, h, loc, mat, rot=(0, 0, 0), verts=24):
+    """loc = centre."""
+    bpy.ops.mesh.primitive_cylinder_add(radius=r, depth=h, location=loc, vertices=verts,
+                                        rotation=tuple(math.radians(a) for a in rot))
+    return _finish(bpy.context.object, mat, name)
+
+
+def sphere(name, r, loc, mat):
+    bpy.ops.mesh.primitive_uv_sphere_add(radius=r, location=loc, segments=20, ring_count=12)
+    bpy.ops.object.shade_smooth()
+    return _finish(bpy.context.object, mat, name)
+
+
+def rod(name, a, b, r, mat, verts=12):
+    """Cylinder from point a to point b."""
+    a, b = Vector(a), Vector(b)
+    d = b - a
+    bpy.ops.mesh.primitive_cylinder_add(radius=r, depth=d.length, location=(a + b) / 2, vertices=verts)
+    o = bpy.context.object
+    o.rotation_mode = "QUATERNION"
+    o.rotation_quaternion = d.to_track_quat("Z", "Y")
+    bpy.ops.object.shade_smooth()
+    return _finish(o, mat, name)
+
+
+def tube_curve(name, pts, r, mat):
+    """A bent hose through the points."""
+    cu = bpy.data.curves.new(name, "CURVE")
+    cu.dimensions = "3D"
+    cu.bevel_depth = r
+    cu.bevel_resolution = 4
+    sp = cu.splines.new("NURBS")
+    sp.points.add(len(pts) - 1)
+    for p, q in zip(sp.points, pts):
+        p.co = (*q, 1)
+    sp.use_endpoint_u = True
+    sp.order_u = 3
+    o = bpy.data.objects.new(name, cu)
+    bpy.context.collection.objects.link(o)
+    o.data.materials.append(mat)
+    return o
+
+
+def plane(name, size, loc, mat, rot=(0, 0, 0)):
+    bpy.ops.mesh.primitive_plane_add(size=1, location=loc, rotation=tuple(math.radians(a) for a in rot))
+    o = bpy.context.object
+    o.scale = (size[0], size[1], 1)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return _finish(o, mat, name)
+
+
+def grid(name, w, h, nx, ny, loc, rot, mat):
+    bpy.ops.mesh.primitive_grid_add(x_subdivisions=nx, y_subdivisions=ny, size=1, location=loc,
+                                    rotation=tuple(math.radians(a) for a in rot))
+    o = bpy.context.object
+    o.scale = (w, h, 1)
+    bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+    return _finish(o, mat, name)
+
+
+# ---------------------------------------------------------------- the scene
+
+
+def clear():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+
+
+def build_room(M):
+    r = ROOM
+    W, D = r["xmax"] - r["xmin"], r["ymax"] - r["ymin"]
+    cx, cy = (r["xmin"] + r["xmax"]) / 2, (r["ymin"] + r["ymax"]) / 2
+    path, size = make_lab_floor_texture()
+    plane("lab_floor", (W, D), (cx, cy, -0.002), mat_image("labfloor", path, scale=size, rough=0.35))
+    plane("ceiling", (W, D), (cx, cy, r["h"]), M["ceiling"], rot=(180, 0, 0))
+    plane("wall_n", (W, r["h"]), (cx, r["ymax"], r["h"] / 2), M["wall"], rot=(90, 0, 0))
+    plane("wall_s", (W, r["h"]), (cx, r["ymin"], r["h"] / 2), M["wall"], rot=(90, 0, 0))
+    plane("wall_w", (D, r["h"]), (r["xmin"], cy, r["h"] / 2), M["wall"], rot=(90, 0, 90))
+    plane("wall_e", (D, r["h"]), (r["xmax"], cy, r["h"] / 2), M["wall"], rot=(90, 0, 90))
+    # windows in the north wall over the robot area, a door, the grey door to the east
+    for i, x in enumerate((-6.5, -5.0, -3.5)):
+        box(f"window_{i}", (1.3, 0.05, 1.0), (x, r["ymax"] - 0.03, 1.3), M["glass"])
+        box(f"window_frame_{i}", (1.4, 0.04, 1.1), (x, r["ymax"] - 0.01, 1.25), M["white_frame"])
+    box("door_n", (1.0, 0.05, 2.1), (3.6, r["ymax"] - 0.03, 0), M["door_grey"])
+    box("big_window_s", (4.0, 0.05, 3.6), (-2.0, r["ymin"] + 0.03, 0.4), M["glass_dark"])
+    # columns
+    for x in (-2.0, 2.4):
+        box(f"column_{x}", (0.35, 0.35, r["h"]), (x, r["ymax"] - 0.18, 0), M["wall"])
+    # red / white tape lines on the floor
+    for (x0, y0, x1, y1) in ((-1.9, -0.2, -1.9, -4.0), (-4.8, -0.9, -2.1, -0.9), (2.9, -2.2, 2.9, 1.8)):
+        L = math.hypot(x1 - x0, y1 - y0)
+        n = int(L / 0.1)
+        ang = math.degrees(math.atan2(y1 - y0, x1 - x0))
+        for k in range(n):
+            t = (k + 0.5) / n
+            box(f"tape_{x0}_{y0}_{k}", (L / n, 0.05, 0.001), (x0 + t * (x1 - x0), y0 + t * (y1 - y0), 0),
+                M["tape_red"] if k % 2 else M["tape_white"], rot_z=ang)
+    # ceiling: two big insulated ducts, pipes, strip lights
+    for y, rad in ((-0.6, 0.32), (1.4, 0.28)):
+        cyl(f"duct_{y}", rad, W, (cx, y, r["h"] - 0.55), M["duct"], rot=(0, 90, 0))
+    for i, (y, z) in enumerate(((0.4, 4.0), (0.55, 4.0), (-1.6, 3.9), (2.0, 3.6))):
+        cyl(f"pipe_{i}", 0.03, W, (cx, y, z), M["pipe"], rot=(0, 90, 0), verts=10)
+    for x in np.arange(r["xmin"] + 1.0, r["xmax"], 2.5):
+        for y in np.arange(r["ymin"] + 1.0, r["ymax"], 2.2):
+            box(f"light_{x:.1f}_{y:.1f}", (1.4, 0.12, 0.05), (x, y, r["h"] - 0.35), M["lamp"])
+            box(f"lightbox_{x:.1f}_{y:.1f}", (1.45, 0.16, 0.05), (x, y, r["h"] - 0.30), M["metal"])
+
+
+def build_cage(M, pad_xy=(0.0, 0.0), pad_yaw=0.0):
+    h = CAGE_HALF
+    path, size = make_mat_texture()
+    mats = plane("cage_mats", (2 * h, 2 * h), (0, 0, 0.004), mat_image("mats", path, scale=size, rough=0.85))
+    pad = plane("pad", (0.5, 0.5), (pad_xy[0], pad_xy[1], 0.009), mat_uv_image("pad", os.path.join(SIM_TEX, "pad.png"), gain=0.25),
+                rot=(0, 0, pad_yaw))
+    # posts and top frame (black square tube)
+    t = 0.04
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            box(f"post_{sx}{sy}", (t, t, CAGE_H), (sx * h, sy * h, 0), M["black_metal"])
+    for s in (-1, 1):
+        box(f"top_x_{s}", (2 * h, t, t), (0, s * h, CAGE_H - t), M["black_metal"])
+        box(f"top_y_{s}", (t, 2 * h, t), (s * h, 0, CAGE_H - t), M["black_metal"])
+        box(f"mid_x_{s}", (2 * h, 0.025, 0.025), (0, s * h, 2.1), M["black_metal"])   # the horizontal rope/bar
+    # net: subdivided planes with a rope-mesh alpha texture, sagging inwards a little
+    netp = make_net_texture()
+    net_m = mat_image("net", netp, scale=1.0, alpha=True, rough=0.9)
+    sides = [("n", (0, h, CAGE_H / 2), (90, 0, 0)), ("s", (0, -h, CAGE_H / 2), (90, 0, 0)),
+             ("e", (h, 0, CAGE_H / 2), (90, 0, 90)), ("w", (-h, 0, CAGE_H / 2), (90, 0, 90))]
+    rng = np.random.default_rng(3)
+    for nm, loc, rot in sides:
+        o = grid(f"net_{nm}", 2 * h, CAGE_H, 24, 30, loc, rot, net_m)
+        inward = -Vector(loc).normalized()
+        inward.z = 0
+        inward.normalize()
+        ph = rng.uniform(0, 6, 3)
+        for v in o.data.vertices:
+            p = v.co
+            a = (p.x if abs(rot[2]) < 1 else p.y) / h          # -1..1 along the side
+            z = p.z / CAGE_H
+            sag = 0.07 * (1 - a * a) * math.sin(math.pi * z) + 0.015 * math.sin(7 * a + ph[0]) * math.sin(5 * z + ph[1])
+            v.co = p + inward * sag
+        # extra net lying on the floor along the side
+        skirt = grid(f"net_skirt_{nm}", 2 * h, 0.25, 12, 3,
+                     (loc[0] * 0.88, loc[1] * 0.88, 0.012), (0, 0, rot[2]), net_m)
+    grid("net_top", 2 * h, 2 * h, 24, 24, (0, 0, CAGE_H), (0, 0, 0), net_m)
+    for o in bpy.data.objects:
+        if o.name.startswith("net"):
+            o.visible_shadow = False          # the real net leaves no visible shadow pattern
+    return pad
+
+
+def desk(M, name, x, y, w, d, rot=0.0, drawers=True):
+    """Workbench: beech top, white frame, blue drawer unit."""
+    top_h = 0.9
+    box(f"{name}_top", (w, d, 0.04), (x, y, top_h - 0.04), M["wood"], rot_z=rot)
+    c, s = math.cos(math.radians(rot)), math.sin(math.radians(rot))
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            lx, ly = sx * (w / 2 - 0.04), sy * (d / 2 - 0.04)
+            box(f"{name}_leg_{sx}{sy}", (0.04, 0.04, top_h - 0.04), (x + c * lx - s * ly, y + s * lx + c * ly, 0), M["white_frame"])
+    box(f"{name}_shelf", (w - 0.1, d - 0.1, 0.02), (x, y, 0.15), M["white_frame"], rot_z=rot)
+    if drawers:
+        lx = -w / 2 + 0.35
+        box(f"{name}_drawers", (0.55, d - 0.1, 0.45), (x + c * lx, y + s * lx, top_h - 0.5), M["blue"], rot_z=rot)
+
+
+def monitor(M, name, x, y, z, rot=0.0, w=0.55):
+    box(f"{name}_screen", (w, 0.03, w * 0.6), (x, y, z + 0.12), M["black_plastic"], rot_z=rot)
+    box(f"{name}_stand", (0.06, 0.06, 0.14), (x, y, z), M["black_plastic"], rot_z=rot)
+    box(f"{name}_foot", (0.22, 0.16, 0.01), (x, y, z), M["black_plastic"], rot_z=rot)
+
+
+def arm_robot(M, name, base, colour, scale=1.0, yaw=0.0, pose=(30, -40, 60)):
+    """Industrial 6-axis arm from simple shapes: base, turret, upper arm, forearm, wrist."""
+    s = scale
+    x, y = base
+    cyl(f"{name}_base", 0.22 * s, 0.25 * s, (x, y, 0.125 * s), M["black_metal"])
+    cyl(f"{name}_turret", 0.18 * s, 0.35 * s, (x, y, 0.42 * s), colour)
+    yawr = math.radians(yaw)
+    fwd = Vector((math.cos(yawr), math.sin(yawr), 0))
+    shoulder = Vector((x, y, 0.62 * s))
+    a1 = math.radians(pose[0])
+    elbow = shoulder + (fwd * math.sin(a1) + Vector((0, 0, math.cos(a1)))) * 0.75 * s
+    a2 = math.radians(pose[1]) + a1
+    wrist = elbow + (fwd * math.cos(a2) + Vector((0, 0, math.sin(a2)))) * 0.65 * s
+    a3 = math.radians(pose[2])
+    tool = wrist + (fwd * math.cos(a3) - Vector((0, 0, math.sin(a3)))) * 0.18 * s
+    rod(f"{name}_upper", shoulder, elbow, 0.11 * s, colour)
+    sphere(f"{name}_elbow", 0.13 * s, elbow, colour)
+    rod(f"{name}_fore", elbow, wrist, 0.08 * s, colour)
+    sphere(f"{name}_wrist", 0.08 * s, wrist, colour)
+    rod(f"{name}_tool", wrist, tool, 0.045 * s, M["black_metal"])
+    sphere(f"{name}_shoulder", 0.16 * s, shoulder, colour)
+
+
+def cobot(M, name, base, z0, yaw=0.0):
+    """UR-style cobot: thin white/grey links with blue-grey joint caps."""
+    x, y = base
+    yawr = math.radians(yaw)
+    fwd = Vector((math.cos(yawr), math.sin(yawr), 0))
+    p0 = Vector((x, y, z0))
+    p1 = p0 + Vector((0, 0, 0.18))
+    p2 = p1 + fwd * 0.25 + Vector((0, 0, 0.35))
+    p3 = p2 + fwd * 0.35 - Vector((0, 0, 0.05))
+    for a, b, nm in ((p0, p1, "l0"), (p1, p2, "l1"), (p2, p3, "l2")):
+        rod(f"{name}_{nm}", a, b, 0.045, M["cobot"])
+    for i, p in enumerate((p1, p2, p3)):
+        cyl(f"{name}_j{i}", 0.06, 0.12, tuple(p), M["cobot_joint"], rot=(90, 0, yaw))
+
+
+def build_surroundings(M):
+    h = CAGE_HALF
+    # north, behind the cage: bench along the wall with machines, the small yellow robot, cabinet
+    by = ROOM["ymax"] - 0.45
+    box("bench_n", (2.4, 0.7, 0.85), (0.1, by, 0), M["alu"])
+    box("bench_n_top", (2.4, 0.7, 0.03), (0.1, by, 0.85), M["alu_top"])
+    box("machine_1", (0.55, 0.45, 0.45), (-0.5, by, 0.88), M["beige_machine"])
+    box("machine_2", (0.4, 0.4, 0.55), (0.2, by, 0.88), M["grey_box"])
+    box("machine_3", (0.5, 0.45, 0.35), (0.8, by, 0.88), M["white_box"])
+    box("frame_rack", (0.5, 0.5, 1.6), (-0.1, by + 0.05, 0.88), M["alu"])
+    arm_robot(M, "yellow_robot", (-1.45, 1.55), M["yellow"], scale=0.75, yaw=-60, pose=(20, -10, 70))
+    box("yellow_robot_stand", (0.6, 0.6, 0.08), (-1.45, 1.55, 0), M["alu"])
+    box("cabinet_grey", (1.0, 0.55, 2.0), (1.75, ROOM["ymax"] - 0.3, 0), M["cabinet"])
+    box("cabinet_line", (0.01, 0.56, 1.95), (1.75, ROOM["ymax"] - 0.3, 0.02), M["black_plastic"])
+    # east of the cage: small table, cardboard box with a monitor on it, pc tower
+    box("table_e", (0.7, 0.7, 0.72), (1.55, 0.55, 0), M["white_frame"])
+    box("carton_e", (0.5, 0.4, 0.35), (1.55, 0.55, 0.72), M["cardboard"])
+    monitor(M, "mon_e", 1.55, 0.6, 1.07, rot=90)
+    # south, where you stand: long desk along the net, laptop, controller, second desk
+    desk(M, "desk_s", -0.1, -h - 0.55, 2.2, 0.8)
+    box("laptop_base", (0.34, 0.24, 0.02), (0.2, -h - 0.55, 0.9), M["laptop"])
+    box("laptop_screen", (0.34, 0.01, 0.23), (0.2, -h - 0.43, 0.92), M["laptop_screen"])
+    box("rc", (0.15, 0.1, 0.04), (-0.4, -h - 0.5, 0.9), M["dark_grey"])
+    box("drone_case", (0.35, 0.25, 0.03), (-0.75, -h - 0.45, 0.9), M["dark_grey"])
+    cyl("bottle", 0.035, 0.25, (0.55, -h - 0.4, 1.025), M["metal"])
+    desk(M, "desk_se", 1.55, -h - 0.15, 0.8, 1.7, drawers=False)
+    monitor(M, "mon_se", 1.75, -0.6, 0.9, rot=100)
+    box("teach_pendant", (0.25, 0.08, 0.35), (1.35, -h - 0.25, 0.9), M["pendant"], rot_z=-30)
+    box("chair_s", (0.5, 0.5, 0.5), (0.3, -h - 1.4, 0), M["black_plastic"])
+    box("chair_s_back", (0.45, 0.08, 0.55), (0.3, -h - 1.62, 0.5), M["black_plastic"])
+    # west: fume extractor near the cage, then the robot area
+    box("fume_box", (0.6, 0.5, 0.95), (-2.0, -0.7, 0.05), M["white_box"])
+    box("fume_front", (0.02, 0.5, 0.5), (-1.69, -0.7, 0.45), M["blue"])
+    tube_curve("fume_hose", [(-2.0, -0.6, 1.0), (-2.1, -0.4, 1.9), (-1.9, 0.0, 2.5), (-1.6, 0.2, 2.1), (-1.5, 0.3, 1.5)], 0.07, M["black_plastic"])
+    box("fume_box_2", (0.6, 0.5, 0.95), (-3.0, 1.6, 0.05), M["white_box"])
+    tube_curve("fume_hose_2", [(-3.0, 1.6, 1.0), (-3.1, 1.4, 2.0), (-2.9, 1.1, 2.6), (-2.6, 0.9, 2.0)], 0.07, M["black_plastic"])
+    arm_robot(M, "green_robot", (-3.4, 0.2), M["green"], scale=1.0, yaw=-20, pose=(25, -30, 60))
+    box("controller_box", (0.6, 0.55, 0.75), (-2.7, -0.1, 0), M["controller"])
+    box("pallet", (1.2, 1.0, 0.15), (-4.8, 0.9, 0), M["wood"])
+    box("pallet_wrap", (1.2, 1.0, 0.35), (-4.8, 0.9, 0.15), M["blue_wrap"])
+    arm_robot(M, "white_robot", (-4.8, 1.0), M["white_robot"], scale=1.35, yaw=-30, pose=(10, -20, 40))
+    box("cobot_table", (1.2, 0.8, 0.85), (-3.3, 1.75, 0), M["alu"])
+    cobot(M, "cobot", (-3.4, 1.75), 0.87, yaw=-120)
+    # further south-west: workbenches with monitors, chairs, the black flight cases
+    for i, x in enumerate((-4.5, -2.7)):
+        desk(M, f"desk_w{i}", x, -2.6, 1.6, 0.75)
+        monitor(M, f"mon_w{i}", x, -2.5, 0.9)
+    box("cases", (0.8, 0.5, 0.9), (2.0, -3.0, 0), M["black_plastic"])
+    desk(M, "desk_e", 3.8, -0.5, 1.6, 0.75, rot=90)
+    box("orange_bench", (2.4, 0.7, 0.85), (4.2, -3.5, 0), M["orange"])
+
+
+def materials():
+    c = mat_color
+    return dict(
+        wall=c("wall", (0.82, 0.82, 0.8), 0.9), ceiling=c("ceiling", (0.55, 0.55, 0.56), 0.9),
+        glass=c("glass", (0.12, 0.16, 0.22), 0.1), glass_dark=c("glass_dark", (0.08, 0.1, 0.16), 0.1),
+        white_frame=c("white_frame", (0.85, 0.85, 0.85), 0.5), door_grey=c("door_grey", (0.6, 0.62, 0.62), 0.6),
+        tape_red=c("tape_red", (0.7, 0.05, 0.05), 0.5), tape_white=c("tape_white", (0.9, 0.9, 0.9), 0.5),
+        duct=c("duct", (0.75, 0.75, 0.74), 0.5, 0.3), pipe=c("pipe", (0.8, 0.8, 0.8), 0.4, 0.5),
+        lamp=c("lamp", (1, 1, 0.97), 0.5, 0, emit=8.0), metal=c("metal", (0.6, 0.6, 0.62), 0.35, 0.8),
+        black_metal=c("black_metal", (0.02, 0.02, 0.02), 0.5, 0.3), alu=c("alu", (0.65, 0.66, 0.68), 0.4, 0.7),
+        alu_top=c("alu_top", (0.75, 0.75, 0.76), 0.4, 0.6), beige_machine=c("beige_machine", (0.75, 0.68, 0.5), 0.6),
+        grey_box=c("grey_box", (0.35, 0.36, 0.38), 0.6), white_box=c("white_box", (0.85, 0.85, 0.83), 0.5),
+        yellow=c("yellow", (0.85, 0.65, 0.02), 0.4), cabinet=c("cabinet", (0.68, 0.69, 0.68), 0.5),
+        cardboard=c("cardboard", (0.55, 0.4, 0.25), 0.9), black_plastic=c("black_plastic", (0.03, 0.03, 0.03), 0.6),
+        wood=c("wood", (0.72, 0.52, 0.3), 0.6), blue=c("blue", (0.08, 0.18, 0.6), 0.4),
+        laptop=c("laptop", (0.6, 0.6, 0.62), 0.4, 0.5), laptop_screen=c("laptop_screen", (0.7, 0.8, 0.95), 0.3, 0, emit=1.5),
+        dark_grey=c("dark_grey", (0.15, 0.15, 0.15), 0.5), pendant=c("pendant", (0.3, 0.32, 0.35), 0.5),
+        green=c("green", (0.3, 0.85, 0.05), 0.4), controller=c("controller", (0.08, 0.08, 0.08), 0.5),
+        blue_wrap=c("blue_wrap", (0.15, 0.4, 0.75), 0.3), white_robot=c("white_robot", (0.88, 0.88, 0.86), 0.4),
+        cobot=c("cobot", (0.8, 0.82, 0.85), 0.4), cobot_joint=c("cobot_joint", (0.35, 0.45, 0.55), 0.4),
+        orange=c("orange", (0.9, 0.35, 0.05), 0.5),
+    )
+
+
+def setup_render(samples=24, res=(640, 400)):
+    sc = bpy.context.scene
+    sc.render.engine = "CYCLES"
+    sc.cycles.device = "CPU"
+    sc.cycles.samples = samples
+    sc.cycles.use_denoising = True
+    sc.cycles.max_bounces = 4
+    sc.cycles.transparent_max_bounces = 24
+    sc.render.resolution_x, sc.render.resolution_y = res
+    sc.render.resolution_percentage = 100
+    sc.view_settings.view_transform = "AgX"
+    sc.view_settings.look = "AgX - Medium High Contrast"
+    sc.view_settings.exposure = -0.6
+    world = bpy.data.worlds.new("world")
+    sc.world = world
+    world.use_nodes = True
+    world.node_tree.nodes["Background"].inputs["Color"].default_value = (0.6, 0.6, 0.62, 1)
+    world.node_tree.nodes["Background"].inputs["Strength"].default_value = 0.5
+    # soft fill from above, like the many ceiling lamps
+    bpy.ops.object.light_add(type="AREA", location=(0, -1, ROOM["h"] - 0.4))
+    L = bpy.context.object
+    L.data.energy = 900
+    L.data.size = 10
+    bpy.ops.object.light_add(type="AREA", location=(-4, -1, ROOM["h"] - 0.4))
+    L = bpy.context.object
+    L.data.energy = 500
+    L.data.size = 6
+
+
+def camera(name, loc, look_at=None, hfov=90.0, rot=None):
+    cam_data = bpy.data.cameras.new(name)
+    cam_data.sensor_fit = "HORIZONTAL"
+    cam_data.angle = math.radians(hfov)
+    cam_data.clip_start = 0.02
+    o = bpy.data.objects.new(name, cam_data)
+    bpy.context.collection.objects.link(o)
+    o.location = loc
+    if look_at is not None:
+        d = Vector(look_at) - Vector(loc)
+        o.rotation_mode = "QUATERNION"
+        o.rotation_quaternion = d.to_track_quat("-Z", "Y")
+    elif rot is not None:
+        o.rotation_mode = "XYZ"
+        o.rotation_euler = rot
+    return o
+
+
+def drone_camera(x, y, z, heading_deg, gimbal_deg=-50.0, hfov=62.0):
+    """Same convention as sim/render.py: heading 0 = north (+y), 90 = east; gimbal negative = down."""
+    # Blender camera looks along -Z; rotate X by (90 + gimbal) to tilt, then about Z.
+    rx = math.radians(90 + gimbal_deg)
+    rz = math.radians(-heading_deg)
+    return camera("drone_cam", (x, y, z), rot=(rx, 0, rz), hfov=hfov)
+
+
+def render_to(cam, path, res=None, samples=None):
+    sc = bpy.context.scene
+    sc.camera = cam
+    if res:
+        sc.render.resolution_x, sc.render.resolution_y = res
+    if samples:
+        sc.cycles.samples = samples
+    sc.render.filepath = path
+    bpy.ops.render.render(write_still=True)
+    return path
+
+
+WHITE_BALANCE = np.array([1.1, 0.97, 0.86], np.float32)   # the Mini 3 frames are warm
+
+
+def drone_frame(x, y, z, heading_deg, res=(320, 180), samples=16, target=0.42, tmp="/tmp/_drone.exr"):
+    """The drone camera's picture as an RGB uint8 array, with auto-exposure like the Mini 3:
+    the scene is rendered in linear light, then brightened until the mean reaches `target`
+    (the floor is black, so the gain is large), then a filmic curve and sRGB."""
+    sc = bpy.context.scene
+    cam = drone_camera(x, y, z, heading_deg)
+    sc.camera = cam
+    sc.render.resolution_x, sc.render.resolution_y = res
+    sc.cycles.samples = samples
+    sc.render.image_settings.file_format = "OPEN_EXR"
+    sc.render.filepath = tmp
+    bpy.ops.render.render(write_still=True)
+    sc.render.image_settings.file_format = "PNG"
+    img = bpy.data.images.load(tmp)
+    a = np.array(img.pixels[:], np.float32).reshape(res[1], res[0], 4)[::-1, :, :3]
+    bpy.data.images.remove(img)
+    bpy.data.objects.remove(cam)
+    lum = float((a @ np.array([0.2126, 0.7152, 0.0722], np.float32)).mean())
+    a = a * min(8.0, target / max(lum, 1e-4)) * WHITE_BALANCE
+    a = a / (1 + 0.35 * a)                                   # soft highlights
+    a = np.where(a <= 0.0031308, 12.92 * a, 1.055 * np.power(np.clip(a, 0, None), 1 / 2.4) - 0.055)
+    return (np.clip(a, 0, 1) * 255).astype(np.uint8)
+
+
+def build(pad_xy=(0.0, 0.0), pad_yaw=0.0):
+    clear()
+    M = materials()
+    build_room(M)
+    build_cage(M, pad_xy, pad_yaw)
+    build_surroundings(M)
+    setup_render()
+
+
+OUTSIDE_VIEWS = [
+    ("se_high", (3.5, -4.0, 3.6), (0, 0, 1.0)),
+    ("nw_high", (-3.8, 1.9, 3.8), (0, 0, 0.8)),
+    ("desk_view", (0.0, -2.6, 1.6), (0, 0.6, 0.8)),
+    ("west_view", (-2.8, -2.5, 1.7), (0, 0.2, 1.0)),
+    ("east_view", (3.2, -1.0, 1.7), (0, 0.2, 1.0)),
+    ("top", (0.5, 0.4, 3.9), (0, 0, 0)),
+]
+
+DRONE_VIEWS = [(0, -0.75, 0.9, 0), (0.3, -0.2, 1.4, 30), (-0.6, 0.3, 1.2, 90),
+               (0.0, 0.5, 1.6, 180), (0.5, 0.5, 2.0, 225), (-0.7, -0.7, 1.0, 45)]
+
+
+def main(argv):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--save", help="write the .blend file here")
+    ap.add_argument("--previews", help="render outside and drone views into this folder")
+    ap.add_argument("--samples", type=int, default=24)
+    ap.add_argument("--only", nargs="*", help="names of views to render")
+    a = ap.parse_args(argv)
+    build()
+    if a.save:
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save))
+    if a.previews:
+        os.makedirs(a.previews, exist_ok=True)
+        for name, loc, tgt in OUTSIDE_VIEWS:
+            if a.only and name not in a.only:
+                continue
+            render_to(camera(name, loc, tgt, hfov=80), os.path.join(os.path.abspath(a.previews), f"out_{name}.png"),
+                      res=(640, 400), samples=a.samples)
+            print(name, flush=True)
+        for i, (x, y, z, hd) in enumerate(DRONE_VIEWS):
+            if a.only and f"drone{i}" not in a.only:
+                continue
+            from PIL import Image
+            Image.fromarray(drone_frame(x, y, z, hd, samples=a.samples)).save(
+                os.path.join(os.path.abspath(a.previews), f"drone_{i}.png"))
+            print("drone", i, flush=True)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

@@ -7,3 +7,4 @@ __pycache__/
 *.zip
 *.npy
 logs/
+sim/blender/tex/
