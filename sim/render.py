@@ -74,7 +74,13 @@ class Textures:
         if mat is not None:
             lum = mat.mean(-1, keepdims=True)
             # dark mats: same foam pattern, grey and darker (as in the frames along the net)
-            self.mat_dark = (lum - lum.mean()) * 0.8 + np.array([96, 94, 93], np.float32)
+            # black mats worn to a dirty grey by walking: same foam pattern, dark, with lighter
+            # scuffed patches
+            rng = np.random.default_rng(7)
+            wear = Image.fromarray((rng.random((9, 12)) * 255).astype(np.uint8)).resize(
+                (mat.shape[1], mat.shape[0]), Image.BICUBIC)
+            wear = np.asarray(wear, np.float32)[..., None] / 255.0
+            self.mat_dark = (lum - lum.mean()) * 0.7 + np.array([62, 60, 60], np.float32) + wear * 34
         else:
             self.mat_dark = None
         self.lab = [np.asarray(Image.open(p).convert("RGB"), dtype=np.float32)
