@@ -124,9 +124,12 @@ class App:
             d = target[i] - self.sticks[i]
             self.sticks[i] += max(-step, min(step, d))
         self.node.pub.publish(Float32MultiArray(data=[float(v) for v in self.sticks]))
+        self.root.after(int(1000 / RATE), self.loop)     # schedule first: a drawing error must not stop the sticks
         rclpy.spin_once(self.node, timeout_sec=0.0)
-        self.draw()
-        self.root.after(int(1000 / RATE), self.loop)
+        try:
+            self.draw()
+        except Exception as e:                            # show it, keep flying
+            self.info.config(text=f"display error: {e}")
 
     def draw(self):
         c = self.canvas
@@ -142,17 +145,17 @@ class App:
         t = self.node.tel
         h = t.get("height_above_takeoff", 0.0) / 3.28084
         mode = "ON GROUND" if t.get("on_ground") else t.get("flight_mode", "waiting for the simulator")
-        r = self.node.rec_status
-        rec = ("REC " + r.get("episode", "") + f"  {r.get('rows', 0) / 10:.1f} s") if r.get("recording") else \
-            ("not recording" if r else "recorder not running")
+        rs = self.node.rec_status
+        rec = ("REC " + rs.get("episode", "") + f"  {rs.get('rows', 0) / 10:.1f} s") if rs.get("recording") else \
+            ("not recording" if rs else "recorder not running")
         self.info.config(text=(f"mode {mode:13s} height {h:4.2f} m   "
                                f"heading {t.get('heading', 0):6.1f}\n"
                                f"sticks  pitch {p:5.0f}  roll {r:5.0f}  throttle {th:5.0f}  yaw {y:5.0f}   "
                                f"strength {self.strength:.0f} %\n"
                                f"last event: {self.node.last_event or '-'}"
                                + ("   NET!" if t.get("touching_net") else "")
-                               + f"\n{rec}\n{r.get('plan', '')}\n{r.get('message', '')}"))
-        self.info.config(fg="#ff6b6b" if r.get("recording") else "#e8e8e8")
+                               + f"\n{rec}\n{rs.get('plan', '')}\n{rs.get('message', '')}"))
+        self.info.config(fg="#ff6b6b" if rs.get("recording") else "#e8e8e8")
 
     def run(self):
         self.root.mainloop()
