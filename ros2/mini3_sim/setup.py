@@ -37,5 +37,6 @@ setup(
         "camera_exposure = mini3_sim.camera_exposure:main",
         "drone_node = mini3_sim.drone_node:main",
         "keyboard = mini3_sim.keyboard:main",
+        "recorder = mini3_sim.recorder:main",
     ]},
 )

@@ -11,6 +11,8 @@ A small window opens; click on it once so it has the keyboard, then:
     L            land (DJI auto landing)
     1 / 2 / 3    stick strength: gentle 30 % / normal 60 % / full 100 %
     Space        let go of all sticks (hover)
+    R            start / stop recording an episode (the controller's record button)
+    O / F        mark the last episode success / fail (the app's OK / BAD buttons)
 
 Holding a key pushes the stick gradually, like a thumb on a real stick; letting go returns it to
 the centre. The sticks are published on /drone/sticks at 20 Hz in stick percent (-100..100), the
@@ -39,12 +41,18 @@ class Keyboard(Node):
         super().__init__("keyboard")
         self.pub = self.create_publisher(Float32MultiArray, "/drone/sticks", 10)
         self.cmd = self.create_publisher(String, "/drone/command", 10)
+        self.rec = self.create_publisher(String, "/drone/record", 10)
+        self.create_subscription(String, "/drone/recorder/status", self.on_rec, 10)
+        self.rec_status = {}
         self.create_subscription(String, "/drone/telemetry", self.on_tel, 10)
         self.create_subscription(String, "/drone/event", self.on_event, 10)
         self.tel, self.last_event = {}, ""
 
     def on_tel(self, m):
         self.tel = json.loads(m.data)
+
+    def on_rec(self, m):
+        self.rec_status = json.loads(m.data)
 
     def on_event(self, m):
         self.last_event = m.data
@@ -65,7 +73,8 @@ class App:
         self.info = tk.Label(self.root, font=("Monospace", 11), fg="#e8e8e8", bg="#202326", justify="left")
         self.info.pack(padx=10, pady=6, anchor="w")
         help_text = ("W/S climb/descend   A/D turn   arrows forward/back/left/right\n"
-                     "T take off   L land   1/2/3 stick strength   Space let go")
+                     "T take off   L land   1/2/3 stick strength   Space let go\n"
+                     "R record on/off   O success   F fail")
         tk.Label(self.root, text=help_text, font=("Monospace", 9), fg="#9aa0a6", bg="#202326",
                  justify="left").pack(padx=10, pady=(0, 10), anchor="w")
         self.root.bind("<KeyPress>", self.on_press)
@@ -82,6 +91,12 @@ class App:
             self.node.cmd.publish(String(data="takeoff"))
         elif k == "l":
             self.node.cmd.publish(String(data="land"))
+        elif k == "r":
+            self.node.rec.publish(String(data="toggle"))
+        elif k == "o":
+            self.node.rec.publish(String(data="success"))
+        elif k == "f":
+            self.node.rec.publish(String(data="fail"))
         elif k in STRENGTH:
             self.strength = STRENGTH[k]
         elif k == "space":
@@ -126,12 +141,18 @@ class App:
             c.create_text(cx, 196, text=title, fill="#9aa0a6", font=("Monospace", 9))
         t = self.node.tel
         h = t.get("height_above_takeoff", 0.0) / 3.28084
-        self.info.config(text=(f"mode {t.get('flight_mode', 'waiting for the simulator'):13s} height {h:4.2f} m   "
+        mode = "ON GROUND" if t.get("on_ground") else t.get("flight_mode", "waiting for the simulator")
+        r = self.node.rec_status
+        rec = ("REC " + r.get("episode", "") + f"  {r.get('rows', 0) / 10:.1f} s") if r.get("recording") else \
+            ("not recording" if r else "recorder not running")
+        self.info.config(text=(f"mode {mode:13s} height {h:4.2f} m   "
                                f"heading {t.get('heading', 0):6.1f}\n"
                                f"sticks  pitch {p:5.0f}  roll {r:5.0f}  throttle {th:5.0f}  yaw {y:5.0f}   "
                                f"strength {self.strength:.0f} %\n"
                                f"last event: {self.node.last_event or '-'}"
-                               + ("   NET!" if t.get("touching_net") else "")))
+                               + ("   NET!" if t.get("touching_net") else "")
+                               + f"\n{rec}\n{r.get('plan', '')}\n{r.get('message', '')}"))
+        self.info.config(fg="#ff6b6b" if r.get("recording") else "#e8e8e8")
 
     def run(self):
         self.root.mainloop()

@@ -24,6 +24,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("gui", default_value="true", description="open the Gazebo window"),
         DeclareLaunchArgument("camera_view", default_value="true", description="open rqt_image_view"),
+        DeclareLaunchArgument("episodes", default_value=os.path.expanduser("~/mini3_sim_episodes"),
+                              description="folder for recorded episodes"),
         DeclareLaunchArgument("keyboard", default_value="true", description="open the keyboard flying window"),
         SetEnvironmentVariable("IGN_GAZEBO_RESOURCE_PATH", resource),
         SetEnvironmentVariable("GZ_SIM_RESOURCE_PATH", resource),
@@ -36,6 +38,8 @@ def generate_launch_description():
              parameters=[{"use_sim_time": True}]),
         Node(package="mini3_sim", executable="drone_node", output="screen",
              parameters=[{"use_sim_time": True}]),
+        Node(package="mini3_sim", executable="recorder", output="screen",
+             parameters=[{"use_sim_time": True, "out_dir": LaunchConfiguration("episodes")}]),
         Node(package="mini3_sim", executable="keyboard", output="screen",
              condition=IfCondition(LaunchConfiguration("keyboard"))),
         Node(package="rqt_image_view", executable="rqt_image_view", arguments=["/drone/camera/image_raw"],

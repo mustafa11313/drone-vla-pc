@@ -8,7 +8,7 @@ Subscribes
     /drone/odometry  nav_msgs/Odometry (from Gazebo: where the drone really is)
 Publishes
     /drone/cmd_vel   geometry_msgs/Twist (to Gazebo, 50 Hz)
-    /drone/telemetry std_msgs/String, JSON with the same fields as your telemetry CSV (10 Hz)
+    /drone/telemetry std_msgs/String, JSON with the same fields as your telemetry CSV (20 Hz)
     /drone/event     std_msgs/String  "took_off" | "landing" | "landed" | "hit_net"
 
 Behaviour, as on the real drone with the phone app:
@@ -65,7 +65,7 @@ class DroneNode(Node):
         self.create_subscription(Odometry, "/drone/odometry", self.on_odom, 10)
         self.dt = 0.02
         self.create_timer(self.dt, self.tick)
-        self.create_timer(0.1, self.publish_telemetry)
+        self.create_timer(0.05, self.publish_telemetry)   # 20 Hz, so each 10 Hz recorder row is fresh
         self.get_logger().info("drone ready: send 'takeoff' on /drone/command (key T in the keyboard window)")
 
     # ------------------------------------------------------------------ inputs
@@ -176,19 +176,21 @@ class DroneNode(Node):
             "x_speed": round(s.vy * MS_TO_MPH, 6),       # NED: north
             "y_speed": round(s.vx * MS_TO_MPH, 6),       # east
             "z_speed": round(-s.vz * MS_TO_MPH, 6),      # down
-            "heading": round(s.heading if s.heading <= 180 else s.heading - 360, 1),
+            "heading": round(s.heading, 1) % 360.0,           # compass 0..360, as the app writes it
             "drone_pitch": round(self.tilt[0], 1), "drone_roll": round(self.tilt[1], 1),
             "pitch_cmd": int(round(self.sticks[0])) if flying else 0,
             "roll_cmd": int(round(self.sticks[1])) if flying else 0,
             "throttle_cmd": int(round(self.sticks[2])) if flying else 0,
             "yaw_cmd": int(round(self.sticks[3])) if flying else 0,
-            "gimbal_heading": round(s.heading if s.heading <= 180 else s.heading - 360, 1),
+            "gimbal_heading": round(s.heading, 1) % 360.0,
             "gimbal_pitch": -50.0, "gimbal_roll": 0.0,
-            "flight_mode": {"landed": "MOTORS_OFF", "takeoff": "AUTO_TAKEOFF", "flying": "GPS_NORMAL",
+            # DJI FlightMode names; on the ground the real drone reports GPS_NORMAL too
+            "flight_mode": {"landed": "GPS_NORMAL", "takeoff": "AUTO_TAKE_OFF", "flying": "GPS_NORMAL",
                             "landing": "AUTO_LANDING"}[self.mode],
             # extra fields for the simulator (not in the real CSV)
             "sim_x": round(s.x, 3), "sim_y": round(s.y, 3), "sim_z": round(s.z, 3),
             "touching_net": self.touching_net,
+            "on_ground": self.mode == "landed",
         }
         self.tel_pub.publish(String(data=json.dumps(tel)))
 
