@@ -11,7 +11,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, SetEnvironmentVariable
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -26,6 +26,9 @@ def generate_launch_description():
         DeclareLaunchArgument("camera_view", default_value="true", description="open rqt_image_view"),
         DeclareLaunchArgument("episodes", default_value=os.path.expanduser("~/mini3_sim_episodes"),
                               description="folder for recorded episodes"),
+        DeclareLaunchArgument("autopilot", default_value="false",
+                              description="fly and record the plan's episodes automatically (no keyboard)"),
+        DeclareLaunchArgument("autopilot_episodes", default_value="216", description="how many episodes to fly"),
         DeclareLaunchArgument("keyboard", default_value="true", description="open the keyboard flying window"),
         SetEnvironmentVariable("IGN_GAZEBO_RESOURCE_PATH", resource),
         SetEnvironmentVariable("GZ_SIM_RESOURCE_PATH", resource),
@@ -41,7 +44,11 @@ def generate_launch_description():
         Node(package="mini3_sim", executable="recorder", output="screen",
              parameters=[{"use_sim_time": True, "out_dir": LaunchConfiguration("episodes")}]),
         Node(package="mini3_sim", executable="keyboard", output="screen",
-             condition=IfCondition(LaunchConfiguration("keyboard"))),
+             condition=IfCondition(PythonExpression(["'", LaunchConfiguration("keyboard"), "' == 'true' and '",
+                                                     LaunchConfiguration("autopilot"), "' != 'true'"]))),
+        Node(package="mini3_sim", executable="autopilot", output="screen",
+             parameters=[{"use_sim_time": True, "episodes": LaunchConfiguration("autopilot_episodes")}],
+             condition=IfCondition(LaunchConfiguration("autopilot"))),
         Node(package="rqt_image_view", executable="rqt_image_view", arguments=["/drone/camera/image_raw"],
              condition=IfCondition(LaunchConfiguration("camera_view"))),
     ])

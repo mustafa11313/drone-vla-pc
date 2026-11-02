@@ -116,6 +116,8 @@ class Recorder(Node):
         self.last_check = ""
         self.message = ""
         self.placed = False
+        self.placed_seq = 0          # counts placements, so the autopilot knows a new setup is ready
+        self.pad_xy = None
         self.saver_q = Queue(maxsize=4)
         threading.Thread(target=self.saver, daemon=True).start()
 
@@ -172,6 +174,9 @@ class Recorder(Node):
         # Gazebo yaw is counter-clockwise from east; heading is clockwise from north
         yaw = np.radians(90.0 - self.start_heading)
         ok = self.set_pose("pad", px, py, 0.0, 0.0) and self.set_pose("mini3", dx, dy, 0.05, yaw)
+        if ok:
+            self.pad_xy = (px, py)
+            self.placed_seq += 1
         self.message = ("placed: " if ok else "could not move the models: ") + self.describe()
         self.get_logger().info(self.message)
 
@@ -410,6 +415,9 @@ class Recorder(Node):
             "waiting_for_result": self.last_dir is not None,
             "plan": self.describe(),
             "message": self.message,
+            "placed_seq": self.placed_seq,
+            "pad_xy": self.pad_xy,
+            "plan_done": self.current() is None,
         })))
 
 

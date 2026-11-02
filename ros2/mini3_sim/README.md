@@ -81,6 +81,28 @@ python3 csv_to_hdf5.py ~/mini3_sim_episodes/episode_0001_*/0001_telemetry_*.csv 
 `0001_setup.json` has `"simulator": true`, so sim and real episodes can always be told apart.
 The plan's progress is kept in `~/mini3_sim_episodes/plan_progress.json`.
 
+## Record all 216 episodes automatically
+
+```
+ros2 launch mini3_sim sim.launch.py autopilot:=true
+```
+
+The autopilot flies the plan by itself: take off, start recording, fly to the pad, land on it,
+mark success (on the pad) or fail (the same setup is flown again), next setup. It moves only the
+sticks, like the keyboard, in the style of your real episodes: mostly one stick at a time,
+pushes of 10-45 % held for 0.5-3 s, pauses while the drone brakes, sometimes a short descent
+first, and landing by holding the throttle down over the pad. Each episode draws its own
+"pilot mood" (how hard, how patient, how precise), so the flights differ.
+
+About 15-20 s per episode, so 216 take about an hour. Faster, with no windows:
+
+```
+ros2 launch mini3_sim sim.launch.py autopilot:=true gui:=false camera_view:=false
+```
+
+`autopilot_episodes:=20` flies only 20. It continues the plan where it stopped
+(`plan_progress.json`), so you can stop with Ctrl+C and start again later.
+
 ## Topics
 
 | Topic | Type | What |

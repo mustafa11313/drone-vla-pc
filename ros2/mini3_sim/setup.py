@@ -38,5 +38,6 @@ setup(
         "drone_node = mini3_sim.drone_node:main",
         "keyboard = mini3_sim.keyboard:main",
         "recorder = mini3_sim.recorder:main",
+        "autopilot = mini3_sim.autopilot:main",
     ]},
 )
