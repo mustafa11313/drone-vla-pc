@@ -10,16 +10,18 @@ Realistic version: real textures cut from your own pictures by sim/make_textures
 plus the things a real camera adds: soft overhead light, vignetting, slight blur, sensor
 noise, JPEG. When a texture file is missing, plain colours are used instead.
 
-The scene:
-    floor        beige foam mats in the middle, dark grey mats along the net
+The scene (checked against the lab video):
+    floor        black foam mats everywhere inside the cage, worn to a dirty grey in places
     landing pad  PAD_SIZE square with rounded corners
-    cage         2 x 2 m, 3 m high: a black, slightly irregular net on the sides and top,
-                 a white base strip under the net, aluminium posts in the corners
-    lab          the hall around the cage, its walls covered with the lab video frames
+    cage         2 x 2 m, 3 m high: a black, slightly irregular net on the sides and top, down
+                 to the floor, black posts in the corners
+    lab          the hall around the cage: each wall shows photos of that side from the video
+                 (north: yellow robot cell; south: the desk; east/west: the open lab)
 
-Camera like the Mini 3 in the recordings: 16:9, about 70 deg horizontal field of view,
-gimbal 50 deg down, stabilised (the drone's own tilt does not move the picture). Each frame
-is rendered at 2 x the size and scaled down, which smooths the edges like a real lens.
+Camera like the Mini 3 in the recordings: 16:9, 62 deg horizontal field of view, gimbal 50 deg
+down, stabilised, and auto-exposure: the floor is black, so the camera brightens the picture a
+lot (that is why the real frames show the mats grey-beige). Each frame is rendered at 2 x the
+size and scaled down, which smooths the edges like a real lens.
 
 The later Gaussian-Splatting copy of the cage can replace this module: anything with the
 same render(x, y, z, heading, scene, camera) -> RGB array will do.
@@ -35,28 +37,41 @@ from PIL import Image, ImageFilter
 
 CAGE_HALF = 1.0          # m, the cage is 2 x 2 m
 CAGE_HEIGHT = 3.0        # m
-LAB_HALF = 1.4           # m, the lab walls (photos) seen through the net
+# where the lab "walls" (photos from the video) stand, in metres from the cage centre.
+# x = east, y = north. North: the yellow robot cell right behind the net; south: the desk where
+# you stand; east and west: the open lab. Distances are guesses from the video.
+LAB_BOUNDS = {"west": -2.5, "east": 3.0, "south": -1.8, "north": 1.5}
 LAB_HEIGHT = 3.6
 PAD_SIZE = 0.5           # m, side of the pad (landing_score.py uses 50 cm too)
 PAD_CORNER = 0.04        # m, corner radius
-BORDER = 0.35            # m, dark mats along the net
 MAT_M_PER_PX = 0.002     # mat.png: 2 mm per pixel (make_textures.ipm)
 NET_CELL = 0.09          # m, net mesh size
 NET_STRAND = 0.0035      # m, strand half-thickness
-BASE_HEIGHT = 0.10       # m, white base strip under the net
-POST = 0.05              # m, corner posts
+POST = 0.04              # m, black corner posts
 
 TEX_DIR = os.path.join(os.path.dirname(__file__), "textures")
 
-PAD_RED = np.array([226, 48, 86])
-WHITE = np.array([238, 232, 230])
-MAT = np.array([196, 180, 168])
-NET = np.array([30, 29, 29])
-BASE = np.array([226, 224, 218])
-ALU = np.array([175, 178, 182])
-LAB_FLOOR = np.array([196, 196, 192])
-LAB_CEIL = np.array([222, 224, 226])
-LAB_WALL = np.array([212, 214, 216])
+# The scene is described in "physical" brightness and the camera then brightens it like the
+# drone's auto-exposure does (EXPOSURE_TARGET). The floor is black foam mats: the drone frames
+# show them light grey-beige only because the camera brightens the dark picture. Textures cut
+# from drone frames are therefore divided back by the brightening they had in those frames.
+FLOOR_DIV = 5.2          # mat.png came from a floor-only drone frame, strongly brightened
+PAD_DIV = 3.0            # pad.png came from a frame with the pad (less brightening)
+LAB_DIV = 1.7            # lab photos came from the phone, exposed for the bright lab
+EXPOSURE_TARGET = 200.0  # mean grey level the camera aims for (tuned with sim.realism)
+MAX_GAIN = 7.0
+EDGE_DARK = 0.62         # how much blacker the mats along the net are than the worn middle
+KNEE = 170.0             # above this grey level the camera compresses highlights
+FLOOR_TINT = np.array([1.12, 0.97, 0.87], np.float32)   # drone camera white balance on the black mats
+
+PAD_RED = np.array([76, 16, 29])
+MAT = np.array([34, 34, 34])
+NET = np.array([12, 12, 12])
+POST_COL = np.array([20, 20, 21])
+LAB_FLOOR = np.array([105, 105, 102])
+LAB_CEIL = np.array([125, 126, 128])
+LAB_WALL = np.array([120, 121, 122])
+SIDES = ("north", "east", "south", "west")
 
 
 def _load(name):
@@ -68,29 +83,36 @@ class Textures:
     _cache = None
 
     def __init__(self):
-        self.pad = _load("pad.png")
+        pad = _load("pad.png")
+        self.pad = pad / PAD_DIV if pad is not None else None
         mat = _load("mat.png")
-        self.mat = mat
         if mat is not None:
-            lum = mat.mean(-1, keepdims=True)
-            # dark mats: same foam pattern, grey and darker (as in the frames along the net)
-            # black mats worn to a dirty grey by walking: same foam pattern, dark, with lighter
-            # scuffed patches
+            # black mats, worn to a dirty grey in places by walking: lighter scuffed patches
             rng = np.random.default_rng(7)
-            wear = Image.fromarray((rng.random((9, 12)) * 255).astype(np.uint8)).resize(
-                (mat.shape[1], mat.shape[0]), Image.BICUBIC)
-            wear = np.asarray(wear, np.float32)[..., None] / 255.0
-            self.mat_dark = (lum - lum.mean()) * 0.7 + np.array([62, 60, 60], np.float32) + wear * 34
+            wear = Image.fromarray((rng.random((4, 5)) * 255).astype(np.uint8)).resize(
+                (mat.shape[1], mat.shape[0]), Image.BICUBIC).filter(ImageFilter.GaussianBlur(40))
+            wear = 0.85 + 0.3 * np.asarray(wear, np.float32)[..., None] / 255.0
+            # neutral black: the warm tint in the drone frames is the camera's (FLOOR_TINT)
+            grey = mat @ np.array([0.299, 0.587, 0.114], np.float32)
+            self.mat = (grey[..., None] / FLOOR_DIV * wear).repeat(3, -1)
         else:
-            self.mat_dark = None
-        self.lab = [np.asarray(Image.open(p).convert("RGB"), dtype=np.float32)
-                    for p in sorted(glob.glob(os.path.join(TEX_DIR, "lab_*.jpg")))]
+            self.mat = None
+        self.lab = {s: [np.asarray(Image.open(p).convert("RGB"), dtype=np.float32) / LAB_DIV
+                        for p in sorted(glob.glob(os.path.join(TEX_DIR, f"lab_{s}_*.jpg")))]
+                    for s in SIDES}
 
     @classmethod
     def get(cls):
         if cls._cache is None:
             cls._cache = cls()
         return cls._cache
+
+    @classmethod
+    def flat(cls):
+        t = cls.__new__(cls)
+        t.pad = t.mat = None
+        t.lab = {s: [] for s in SIDES}
+        return t
 
 
 @dataclass
@@ -113,12 +135,10 @@ class Scene:
     show_pad: bool = True
     brightness: float = 1.0
     seed: int = 0
-    tile_shade: np.ndarray = field(default=None, repr=False)
     net_phase: np.ndarray = field(default=None, repr=False)
 
     def __post_init__(self):
         rng = np.random.default_rng(self.seed)
-        self.tile_shade = rng.uniform(-6, 6, size=(64, 64))
         self.net_phase = rng.uniform(0, 2 * math.pi, size=8)
         self.rng = rng
 
@@ -139,12 +159,13 @@ def _rays(cam, heading_deg, w, h):
     return d / np.linalg.norm(d, axis=-1, keepdims=True)
 
 
-def _box_exit(o, d, half, top):
-    """Distance along each ray to where it leaves the box |x|,|y| <= half, 0 <= z <= top, and
-    which face: 0 floor, 1 side x, 2 side y, 3 top."""
+def _box_exit(o, d, bounds, top):
+    """Distance along each ray to where it leaves the box xmin..xmax, ymin..ymax, 0..top, and
+    which face: 0 floor, 1 side x, 2 side y, 3 top. bounds = (xmin, xmax, ymin, ymax)."""
+    xmin, xmax, ymin, ymax = bounds
     with np.errstate(divide="ignore", invalid="ignore"):
-        tx = np.where(d[..., 0] > 0, (half - o[0]) / d[..., 0], (-half - o[0]) / d[..., 0])
-        ty = np.where(d[..., 1] > 0, (half - o[1]) / d[..., 1], (-half - o[1]) / d[..., 1])
+        tx = np.where(d[..., 0] > 0, (xmax - o[0]) / d[..., 0], (xmin - o[0]) / d[..., 0])
+        ty = np.where(d[..., 1] > 0, (ymax - o[1]) / d[..., 1], (ymin - o[1]) / d[..., 1])
         tz = np.where(d[..., 2] > 0, (top - o[2]) / d[..., 2], (0 - o[2]) / d[..., 2])
     tx = np.where(np.isfinite(tx) & (tx > 0), tx, np.inf)
     ty = np.where(np.isfinite(ty) & (ty > 0), ty, np.inf)
@@ -152,6 +173,10 @@ def _box_exit(o, d, half, top):
     t = np.minimum(np.minimum(tx, ty), tz)
     face = np.where(t == tz, np.where(d[..., 2] > 0, 3, 0), np.where(t == tx, 1, 2))
     return t, face
+
+
+CAGE_BOUNDS = (-CAGE_HALF, CAGE_HALF, -CAGE_HALF, CAGE_HALF)
+LAB_BOX = (LAB_BOUNDS["west"], LAB_BOUNDS["east"], LAB_BOUNDS["south"], LAB_BOUNDS["north"])
 
 
 def _sample(tex, u, v):
@@ -165,15 +190,14 @@ def _sample(tex, u, v):
 
 
 def _floor_colour(scene, x, y, tex):
-    border = (np.abs(x) > CAGE_HALF - BORDER) | (np.abs(y) > CAGE_HALF - BORDER)
     if tex.mat is not None:
-        u, v = x / MAT_M_PER_PX, -y / MAT_M_PER_PX
-        col = _sample(tex.mat, u, v).copy()
-        col[border] = _sample(tex.mat_dark, u[border] + 137, v[border] + 59)
+        col = _sample(tex.mat, x / MAT_M_PER_PX, -y / MAT_M_PER_PX).copy()
     else:
-        col = np.broadcast_to(MAT, x.shape + (3,)).astype(float).copy()
-        col[border] = (98, 96, 95)
-    outside = (np.abs(x) > CAGE_HALF) | (np.abs(y) > CAGE_HALF)
+        col = np.broadcast_to(MAT, x.shape + (3,)).astype(np.float32).copy()
+    # less walked-on along the net: the mats there stayed blacker (the darker band in the frames)
+    edge = CAGE_HALF - np.maximum(np.abs(x), np.abs(y))
+    col *= (EDGE_DARK + (1 - EDGE_DARK) * np.clip((edge - 0.12) / 0.3, 0, 1))[..., None]
+    outside = edge < 0
     col[outside] = LAB_FLOOR
     if scene.show_pad:
         a = math.radians(scene.pad_yaw)
@@ -205,8 +229,37 @@ def _net_strand(scene, a, b):
     return (dp < w) | (dq < w)
 
 
+def lab_wall_colour(tex, p, side):
+    """Colour of the lab wall `side` at points p (N x 3): the side's photos side by side, as
+    seen from inside the cage facing that wall (left to right), floor to LAB_HEIGHT."""
+    b = LAB_BOUNDS
+    if side == "north":
+        along, length = p[:, 0] - b["west"], b["east"] - b["west"]
+    elif side == "south":
+        along, length = b["east"] - p[:, 0], b["east"] - b["west"]
+    elif side == "east":
+        along, length = b["north"] - p[:, 1], b["north"] - b["south"]
+    else:
+        along, length = p[:, 1] - b["south"], b["north"] - b["south"]
+    out = np.empty((len(p), 3), np.float32)
+    out[:] = LAB_WALL
+    photos = tex.lab.get(side) or []
+    if not photos:
+        return out
+    n = len(photos)
+    seg = np.clip((along / length * n).astype(int), 0, n - 1)
+    fu = np.clip(along / length * n - seg, 0, 1)
+    fv = 1 - np.clip(p[:, 2] / LAB_HEIGHT, 0, 1)
+    for k, im in enumerate(photos):
+        m = seg == k
+        if m.any():
+            h, w = im.shape[:2]
+            out[m] = im[(fv[m] * (h - 1)).astype(int), (fu[m] * (w - 1)).astype(int)]
+    return out
+
+
 def _lab_colour(o, d, tex):
-    t, face = _box_exit(o, d, LAB_HALF, LAB_HEIGHT)
+    t, face = _box_exit(o, d, LAB_BOX, LAB_HEIGHT)
     p = o + d * t[..., None]
     col = np.empty(t.shape + (3,), np.float32)
     col[:] = LAB_WALL
@@ -214,71 +267,64 @@ def _lab_colour(o, d, tex):
     col[face == 3] = LAB_CEIL
     lights = (face == 3) & (np.mod(p[..., 0], 2.5) < 0.2) & (np.mod(p[..., 1], 3.0) < 1.6)
     col[lights] = (255, 255, 252)
-    if tex.lab:
-        n = len(tex.lab)
-        wall = (face == 1) | (face == 2)
-        along = np.where(face == 1, p[..., 1] * np.sign(p[..., 0]), -p[..., 0] * np.sign(p[..., 1]))
-        side = np.where(face == 1, np.where(p[..., 0] > 0, 0, 2), np.where(p[..., 1] > 0, 3, 1))
-        # two pictures per wall, each LAB_HALF wide, floor to LAB_HEIGHT
-        half = (along > 0).astype(int)
-        idx = (side * 2 + half) % n
-        fu = np.mod(along + LAB_HALF, LAB_HALF) / LAB_HALF
-        fv = 1 - np.clip(p[..., 2] / LAB_HEIGHT, 0, 1)
-        for k in range(n):
-            m = wall & (idx == k)
-            if m.any():
-                im = tex.lab[k]
-                h, w = im.shape[:2]
-                col[m] = im[(fv[m] * (h - 1)).astype(int), (fu[m] * (w - 1)).astype(int)]
+    for side, m in (("east", (face == 1) & (p[..., 0] > 0)), ("west", (face == 1) & (p[..., 0] <= 0)),
+                    ("north", (face == 2) & (p[..., 1] > 0)), ("south", (face == 2) & (p[..., 1] <= 0))):
+        if m.any():
+            col[m] = lab_wall_colour(tex, p[m], side)
     return col
+
+
+def expose(col, cam):
+    """The drone camera's auto-exposure, sensor and lens: brighten to EXPOSURE_TARGET, scale down
+    (anti-aliasing), slight blur, vignetting, noise."""
+    lum = float((col @ np.array([0.299, 0.587, 0.114], np.float32)).mean())
+    gain = min(MAX_GAIN, max(0.7, EXPOSURE_TARGET / max(lum, 1.0)))
+    v = col * gain
+    # soft highlights: the bright lab behind the net keeps some detail instead of turning white
+    v = np.where(v > KNEE, KNEE + (255 - KNEE) * np.tanh((v - KNEE) / (255 - KNEE)), v)
+    img = Image.fromarray(np.clip(v, 0, 255).astype(np.uint8))
+    if img.size != (cam.width, cam.height):
+        img = img.resize((cam.width, cam.height), Image.BOX)
+    if cam.realistic and cam.blur:
+        img = img.filter(ImageFilter.GaussianBlur(cam.blur))
+    return np.asarray(img, np.float32), gain
 
 
 def render(x, y, z, heading, scene=None, cam=None):
     """RGB uint8 array (H, W, 3) seen from the drone at (x, y, z) m with this heading (deg)."""
     scene = scene or Scene()
     cam = cam or Camera()
-    tex = Textures.get() if cam.realistic else Textures.__new__(Textures)
-    if not cam.realistic:
-        tex.pad = tex.mat = tex.mat_dark = None
-        tex.lab = []
+    tex = Textures.get() if cam.realistic else Textures.flat()
     ss = cam.supersample if cam.realistic else 1
     W, H = cam.width * ss, cam.height * ss
     o = np.array([x, y, max(z, 0.05)])
     d = _rays(cam, heading, W, H)
-    t, face = _box_exit(o, d, CAGE_HALF, CAGE_HEIGHT)
+    t, face = _box_exit(o, d, CAGE_BOUNDS, CAGE_HEIGHT)
     p = o + d * t[..., None]
     col = np.empty(t.shape + (3,), np.float32)
     floor = face == 0
-    col[floor] = _floor_colour(scene, p[..., 0][floor], p[..., 1][floor], tex)
+    col[floor] = _floor_colour(scene, p[..., 0][floor], p[..., 1][floor], tex) * FLOOR_TINT
     wall = ~floor
     a = np.where(face == 1, p[..., 1], p[..., 0])
     b = np.where(face == 3, p[..., 1], p[..., 2])
     side = (face == 1) | (face == 2)
     strand = wall & _net_strand(scene, a, b)
-    base = side & (p[..., 2] < BASE_HEIGHT)
     post = side & (np.abs(a) > CAGE_HALF - POST)
-    behind = wall & ~strand & ~base & ~post
+    behind = wall & ~strand & ~post
     if behind.any():
-        col[behind] = _lab_colour(o, d[behind], tex) * 0.9      # seen through the net
+        col[behind] = _lab_colour(o, d[behind], tex) * 0.92      # seen through the net
     col[strand] = NET
-    col[base] = BASE
-    col[post] = ALU * (0.85 + 0.15 * np.abs(d[post][:, 0]))[:, None]
+    col[post] = POST_COL
     # light: overhead lamps make the floor near the centre a bit brighter, far things dimmer
     r = np.hypot(p[..., 0], p[..., 1])
     light = 1.04 - 0.06 * np.clip(r - 0.5, 0, 2) - 0.012 * np.clip(t, 0, 6)
     col *= light[..., None] * scene.brightness
+    out, _ = expose(col, cam)
     if not cam.realistic:
-        return np.clip(col, 0, 255).astype(np.uint8)
-    img = Image.fromarray(np.clip(col, 0, 255).astype(np.uint8))
-    if ss > 1:
-        img = img.resize((cam.width, cam.height), Image.BOX)
-    if cam.blur:
-        img = img.filter(ImageFilter.GaussianBlur(cam.blur))
-    out = np.asarray(img, np.float32)
-    # vignetting and sensor noise
+        return out.astype(np.uint8)
     yy, xx = np.mgrid[0:cam.height, 0:cam.width]
     rr = np.hypot((xx - cam.width / 2) / (cam.width / 2), (yy - cam.height / 2) / (cam.height / 2))
-    out *= (1 - 0.12 * rr ** 2)[..., None]
+    out = out * (1 - 0.12 * rr ** 2)[..., None]
     if cam.noise:
         out += scene.rng.normal(0, cam.noise, out.shape)
     return np.clip(out, 0, 255).astype(np.uint8)

@@ -37,7 +37,8 @@ def test_pad_seen_ahead_not_behind():
     ahead = to_jpeg(render(0.0, -0.3, 1.2, 0.0, sc))          # pad 0.8 m north, facing north
     behind = to_jpeg(render(0.0, -0.3, 1.2, 180.0, sc))
     assert pad_in_frame(ahead)[0]
-    assert not pad_in_frame(behind)[0]
+    # behind: only the small red tape marks on the lab floor (they are in the video too)
+    assert pad_in_frame(behind)[3] < 0.01 < pad_in_frame(ahead)[3]
 
 
 def test_pad_left_appears_left():
