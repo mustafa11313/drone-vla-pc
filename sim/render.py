@@ -258,7 +258,9 @@ def lab_wall_colour(tex, p, side):
     return out
 
 
-PROBES_FILE = os.environ.get("SIM_PROBES", os.path.join(os.path.dirname(__file__), "blender", "probes.npz"))
+PROBES_FILE = os.environ.get("SIM_PROBES", os.path.join(os.path.dirname(__file__), "blender", "probes"))
+PROBE_ENC = 16.0        # log encoding of the packed probes: v = log1p(x * ENC) / log1p(XMAX * ENC)
+PROBE_XMAX = 12.0
 FACE_AXES = {"px": ((1, 0, 0), (0, 0, 1)), "nx": ((-1, 0, 0), (0, 0, 1)),
              "py": ((0, 1, 0), (0, 0, 1)), "ny": ((0, -1, 0), (0, 0, 1)),
              "pz": ((0, 0, 1), (0, 1, 0)), "nz": ((0, 0, -1), (0, 1, 0))}
@@ -266,7 +268,7 @@ FACE_AXES = {"px": ((1, 0, 0), (0, 0, 1)), "nx": ((-1, 0, 0), (0, 0, 1)),
 
 MAX_PROBES = 4          # blend at most this many of the nearest probes
 PARALLAX_STEPS = 1
-LAB_PROBE_GAIN = 0.4    # lab vs black mats as the drone camera sees them (tuned on real frames)
+LAB_PROBE_GAIN = 0.15   # lab vs black mats as the drone camera sees them (tuned with sim.realism)
 
 
 class Probes:
@@ -275,9 +277,18 @@ class Probes:
     _cache = {}
 
     def __init__(self, path):
-        z = np.load(path)
+        if os.path.isdir(path):                         # packed: meta.npz + one JPEG per probe
+            z = np.load(os.path.join(path, "meta.npz"))
+            ims = [np.asarray(Image.open(os.path.join(path, f"probe_{i:02d}.jpg")).convert("RGB"), np.float32) / 255
+                   for i in range(len(z["pos"]))]
+            n = ims[0].shape[0]
+            v = np.stack([im.reshape(n, 6, n, 3).transpose(1, 0, 2, 3) for im in ims])
+            rgb = (np.expm1(v * math.log1p(PROBE_XMAX * PROBE_ENC)) / PROBE_ENC).astype(np.float16)
+        else:
+            z = np.load(path)
+            rgb = z["rgb"]
         self.pos = z["pos"].astype(np.float32)
-        self.rgb = z["rgb"]                             # (P, 6, R, R, 3) linear, float16
+        self.rgb = rgb                                  # (P, 6, R, R, 3) linear, float16
         self.depth = z["depth"].astype(np.float32)[..., None]   # (P, 6, r, r, 1)
         faces = [str(f) for f in z["faces"]]
         ax = [FACE_AXES[f] for f in faces]
@@ -285,7 +296,28 @@ class Probes:
         self.up = np.array([a[1] for a in ax], np.float32)
         self.right = np.cross(self.fwd, self.up)
         self.xs, self.ys, self.zs = (np.unique(self.pos[:, i]) for i in range(3))
+        assert faces == list(FACE_AXES), "probe faces must be in the order px nx py ny pz nz"
+        ru = []
+        for r, u in zip(self.right, self.up):
+            ri, ui = int(np.abs(r).argmax()), int(np.abs(u).argmax())
+            ru.append((ri, np.sign(r[ri]), ui, np.sign(u[ui])))
+        self._ru = np.array([[a, b, c, e] for a, b, c, e in ru], np.float32)
+        self._ri = self._ru[:, 0].astype(int)
         self.mat_radiance = float(z["mat_radiance"])
+
+    @staticmethod
+    def pack(npz, outdir, quality=92):
+        """probes.npz from Blender (90 MB) -> outdir with meta.npz + JPEGs (a few MB, in git)."""
+        z = np.load(npz)
+        os.makedirs(outdir, exist_ok=True)
+        rgb = z["rgb"].astype(np.float32)
+        v = np.log1p(np.clip(rgb, 0, PROBE_XMAX) * PROBE_ENC) / math.log1p(PROBE_XMAX * PROBE_ENC)
+        for i in range(len(rgb)):
+            strip = v[i].transpose(1, 0, 2, 3).reshape(rgb.shape[2], -1, 3)     # 6 faces side by side
+            Image.fromarray((strip * 255 + 0.5).astype(np.uint8)).save(
+                os.path.join(outdir, f"probe_{i:02d}.jpg"), quality=quality)
+        np.savez_compressed(os.path.join(outdir, "meta.npz"), pos=z["pos"], depth=z["depth"],
+                            faces=z["faces"], mat_radiance=z["mat_radiance"])
 
     @classmethod
     def get(cls, path=None):
@@ -297,17 +329,21 @@ class Probes:
     def _lookup(self, img, i, d):
         """Sample cube i of `img` (P, 6, n, n, C) in directions d (N x 3), nearest texel."""
         a = np.abs(d)
-        m = np.argmax(a, 1)
-        sign = d[np.arange(len(d)), m] > 0
-        face = np.where(m == 0, np.where(sign, 0, 1), np.where(m == 1, np.where(sign, 2, 3), np.where(sign, 4, 5)))
-        f, r, u = self.fwd[face], self.right[face], self.up[face]
-        k = np.einsum("ij,ij->i", d, f)
-        x = np.einsum("ij,ij->i", d, r) / k
-        y = np.einsum("ij,ij->i", d, u) / k
+        m = a.argmax(1)
+        rows = np.arange(len(d))
+        neg = d[rows, m] < 0
+        face = 2 * m + neg                                   # px nx py ny pz nz
+        k = a[rows, m]
+        # right/up components per face, from FACE_AXES (fixed order)
+        R = self._ru[face]
+        ri, rs, ui, us = R[:, 0].astype(np.int32), R[:, 1], R[:, 2].astype(np.int32), R[:, 3]
+        x = d[rows, ri] * rs / k
+        y = d[rows, ui] * us / k
         n = img.shape[2]
-        col = np.clip(((x + 1) / 2 * n).astype(int), 0, n - 1)
-        row = np.clip(((1 - y) / 2 * n).astype(int), 0, n - 1)
-        return img[i, face, row, col]
+        col = np.minimum(((x + 1) * (n / 2)).astype(np.int32), n - 1)
+        row = np.minimum(((1 - y) * (n / 2)).astype(np.int32), n - 1)
+        flat = img.reshape(-1, img.shape[-1])
+        return flat[((i * 6 + face) * n + row) * n + col]
 
     def _weights(self, o):
         out = []
@@ -419,7 +455,9 @@ def render(x, y, z, heading, scene=None, cam=None):
         if ss > 1 and Probes.get() is not None and tex.mat is not None:
             # the lab behind the net is blurry anyway: look it up at output size, then enlarge
             dl = d[ss // 2::ss, ss // 2::ss]
-            lab = _lab_colour(o, dl.reshape(-1, 3), tex).reshape(dl.shape)
+            need = behind.reshape(dl.shape[0], ss, dl.shape[1], ss).any((1, 3))
+            lab = np.zeros(dl.shape, np.float32)
+            lab[need] = _lab_colour(o, dl[need], tex)
             lab = lab.repeat(ss, 0).repeat(ss, 1)
             col[behind] = lab[behind] * 0.92
         else:

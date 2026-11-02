@@ -611,11 +611,42 @@ def _face_dirs(face, n):
     return d / np.linalg.norm(d, axis=-1, keepdims=True)
 
 
-def bake_probes(out, res=320, depth_res=64, samples=32):
-    sc = bpy.context.scene
+def _hide_cage():
     for o in bpy.data.objects:
         if o.name.startswith(HIDE_FOR_PROBES):
             o.hide_render = True
+            o.hide_viewport = True        # also for scene.ray_cast (the depth maps)
+    bpy.context.view_layer.update()
+
+
+def probe_depths(pos, depth_res=64):
+    sc = bpy.context.scene
+    deps = bpy.context.evaluated_depsgraph_get()
+    depth = np.zeros((len(pos), 6, depth_res, depth_res), np.float16)
+    for i, p in enumerate(pos):
+        P = Vector(tuple(float(c) for c in p))
+        for k, face in enumerate(FACES):
+            dirs = _face_dirs(face, depth_res).reshape(-1, 3)
+            dd = np.empty(len(dirs), np.float32)
+            for j, v in enumerate(dirs):
+                hit, loc, *_ = sc.ray_cast(deps, P, Vector(tuple(v)))
+                dd[j] = (loc - P).length if hit else 30.0
+            depth[i, k] = dd.reshape(depth_res, depth_res)
+    return depth
+
+
+def redo_depths(path):
+    """Recompute only the depth maps of an existing probe file (fast, no rendering)."""
+    _hide_cage()
+    z = dict(np.load(path))
+    z["depth"] = probe_depths(z["pos"], z["depth"].shape[-1])
+    np.savez_compressed(path, **z)
+    print("depths ->", path, float(z["depth"].max()))
+
+
+def bake_probes(out, res=320, depth_res=64, samples=32):
+    sc = bpy.context.scene
+    _hide_cage()
     deps = bpy.context.evaluated_depsgraph_get()
     g = PROBE_GRID
     pos = np.array([(x, y, z) for x in g["x"] for y in g["y"] for z in g["z"]], np.float32)
@@ -635,13 +666,8 @@ def bake_probes(out, res=320, depth_res=64, samples=32):
             rgb[i, k] = np.array(im.pixels[:], np.float32).reshape(res, res, 4)[::-1, :, :3]
             bpy.data.images.remove(im)
             bpy.data.objects.remove(cam)
-            dirs = _face_dirs(face, depth_res).reshape(-1, 3)
-            dd = np.empty(len(dirs), np.float32)
-            for j, v in enumerate(dirs):
-                hit, loc, *_ = sc.ray_cast(deps, Vector(tuple(p)), Vector(tuple(v)))
-                dd[j] = (loc - Vector(tuple(p))).length if hit else 30.0
-            depth[i, k] = dd.reshape(depth_res, depth_res)
         print(f"probe {i + 1}/{len(pos)}", flush=True)
+    depth[:] = probe_depths(pos, depth_res)
     # brightness of the black mats under the same light, so render.py can match its own floor
     cam = _face_camera((0.0, 0.0, 1.2), "nz", res)
     sc.camera = cam
@@ -684,10 +710,13 @@ def main(argv):
     ap.add_argument("--only", nargs="*", help="names of views to render")
     ap.add_argument("--probes", help="bake the light probes for sim/render.py into this .npz")
     ap.add_argument("--probe-res", type=int, default=320)
+    ap.add_argument("--redo-depths", help="recompute only the depth maps of this probe file")
     a = ap.parse_args(argv)
     build()
     if a.save:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save))
+    if a.redo_depths:
+        redo_depths(os.path.abspath(a.redo_depths))
     if a.probes:
         bake_probes(os.path.abspath(a.probes), res=a.probe_res, samples=a.samples)
     if a.previews:

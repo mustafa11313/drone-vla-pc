@@ -70,8 +70,20 @@ floor is black, so the camera brightens it a lot) and warm white balance.
     pip install bpy pillow numpy        # Blender as a Python module, no GPU needed
     python3 sim/blender/build_lab.py --save lab.blend --previews previews/
 
-Positions are estimates; change them in `build_surroundings`. About 20 s per frame on 4 CPU
-cores, so it is not yet used inside `sim/run.py` (next step: a fast renderer for flights).
+Positions are estimates; change them in `build_surroundings`. A Blender frame takes about 20 s
+on 4 CPU cores, too slow for flights, so the flights use **probes** baked from it:
+
+- `--probes probes.npz` renders the lab (without the cage) as six 90° pictures plus a depth map
+  from 36 points inside the cage (about 30 min on CPU). `Probes.pack` in `sim/render.py` turns
+  that into `sim/blender/probes/` (3.5 MB of JPEGs, in git).
+- `sim/render.py` still draws the inside of the cage itself (mats, pad, net, posts) and looks up
+  the probes for every ray that passes the net, blending the 4 nearest points and correcting
+  the parallax with the depth maps. About 0.1 s per frame.
+- `LAB_PROBE_GAIN` sets how bright the lab is next to the black mats; it was tuned with
+  `sim.realism` against real frames. Without the probes folder the old photo walls are used.
+
+After changing the Blender scene: bake again, then
+`python3 -c "from sim.render import Probes; Probes.pack('probes.npz', 'sim/blender/probes')"`.
 
 ## Limits of this first version
 
