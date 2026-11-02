@@ -24,6 +24,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("gui", default_value="true", description="open the Gazebo window"),
         DeclareLaunchArgument("camera_view", default_value="true", description="open rqt_image_view"),
+        DeclareLaunchArgument("keyboard", default_value="true", description="open the keyboard flying window"),
         SetEnvironmentVariable("IGN_GAZEBO_RESOURCE_PATH", resource),
         SetEnvironmentVariable("GZ_SIM_RESOURCE_PATH", resource),
         ExecuteProcess(cmd=["ign", "gazebo", "-r", world], output="screen", condition=IfCondition(gui)),
@@ -33,6 +34,10 @@ def generate_launch_description():
              parameters=[{"config_file": os.path.join(share, "config", "bridge.yaml"), "use_sim_time": True}]),
         Node(package="mini3_sim", executable="camera_exposure", output="screen",
              parameters=[{"use_sim_time": True}]),
+        Node(package="mini3_sim", executable="drone_node", output="screen",
+             parameters=[{"use_sim_time": True}]),
+        Node(package="mini3_sim", executable="keyboard", output="screen",
+             condition=IfCondition(LaunchConfiguration("keyboard"))),
         Node(package="rqt_image_view", executable="rqt_image_view", arguments=["/drone/camera/image_raw"],
              condition=IfCondition(LaunchConfiguration("camera_view"))),
     ])

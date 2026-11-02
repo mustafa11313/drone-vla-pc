@@ -10,7 +10,7 @@
         <inertia><ixx>0.0006</ixx><iyy>0.0006</iyy><izz>0.001</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
       </inertial>
       <collision name="body">
-        <geometry><box><size>0.25 0.25 0.06</size></box></geometry>
+        <geometry><cylinder><radius>0.11</radius><length>0.06</length></cylinder></geometry>
       </collision>
       <visual name="body">
         <geometry><box><size>0.15 0.09 0.055</size></box></geometry>

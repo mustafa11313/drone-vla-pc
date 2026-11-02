@@ -3,13 +3,15 @@
 Your DJI Mini 3 in the lab's 2 x 2 x 3 m net cage, in Gazebo Fortress with ROS 2 Humble, on
 Ubuntu 22.04. Runs on a laptop without an NVIDIA GPU.
 
-**Step 1 (this version):** the lab, the cage with its net, the pad and the drone in Gazebo; the
-drone camera on a ROS 2 topic. Flying, keyboard, recording and OpenVLA come in the next steps.
+**Steps 1 to 3 (this version):** the lab, the cage with its net, the pad and the drone in Gazebo;
+the drone camera on a ROS 2 topic; the drone flies like your Mini 3 (motion fitted from your real
+flights, DJI auto takeoff and landing, the net stops it); you fly it with the keyboard.
+Recording, OpenVLA and Claude come in the next steps.
 
 ## Install (once)
 
 ```
-sudo apt install ros-humble-ros-gz ros-humble-rqt-image-view python3-numpy
+sudo apt install ros-humble-ros-gz ros-humble-rqt-image-view python3-numpy python3-tk
 mkdir -p ~/mini3_ws/src
 ln -s ~/drone-vla-pc/ros2/mini3_sim ~/mini3_ws/src/mini3_sim
 cd ~/mini3_ws && source /opt/ros/humble/setup.bash && colcon build --symlink-install
@@ -22,8 +24,30 @@ source /opt/ros/humble/setup.bash && source ~/mini3_ws/install/setup.bash
 ros2 launch mini3_sim sim.launch.py
 ```
 
-Two windows open: Gazebo (third-person view: drag with the left mouse button to turn, right
-button to move, wheel to zoom) and `rqt_image_view` with the drone camera.
+Three windows open: Gazebo (third-person view: drag with the left mouse button to turn, right
+button to move, wheel to zoom), `rqt_image_view` with the drone camera, and the small
+"Mini 3 keyboard" window.
+
+## Fly
+
+Click once on the "Mini 3 keyboard" window so it gets the keys. The keys sit like the sticks of
+the DJI controller (Mode 2):
+
+| Key | Stick | Drone |
+|---|---|---|
+| T | (take off button) | DJI auto takeoff to 1.2 m |
+| L | (land button) | DJI auto landing |
+| W / S | left stick up / down | climb / descend |
+| A / D | left stick left / right | turn left / right |
+| Up / Down | right stick up / down | forward / back |
+| Left / Right | right stick left / right | sideways left / right |
+| 1 / 2 / 3 | | stick strength: gentle 30 % / normal 60 % (start) / full 100 % |
+| Space | | let go of all sticks |
+
+Holding a key pushes the stick gradually and letting go brings it back to the centre, where the
+drone brakes and hovers like the Mini 3. Holding S below 0.6 m lands it, like the real app. The
+window shows both sticks, the height, the heading and the flight mode. When the drone touches
+the net it stops there (the window shows NET!).
 
 ## Topics
 
@@ -32,7 +56,11 @@ button to move, wheel to zoom) and `rqt_image_view` with the drone camera.
 | `/drone/camera/image_raw` | sensor_msgs/Image | drone camera, 640 x 360, 62 deg wide, 50 deg down, with the drone's auto-brightening |
 | `/drone/camera/raw` | sensor_msgs/Image | the same before auto-brightening (straight from Gazebo) |
 | `/drone/odometry` | nav_msgs/Odometry | drone position and speed (x east, y north, z up, cage centre = 0) |
-| `/drone/cmd_vel` | geometry_msgs/Twist | moves the drone (used by the drone node in step 2) |
+| `/drone/sticks` | std_msgs/Float32MultiArray | the sticks [pitch, roll, throttle, yaw] in stick percent, -100..100 (from the keyboard; later from OpenVLA) |
+| `/drone/command` | std_msgs/String | `takeoff` or `land` |
+| `/drone/telemetry` | std_msgs/String (JSON) | 10 Hz, the same fields as the real `*_telemetry_*.csv` (height in ft, speeds in mph NED, heading, stick commands, flight_mode) plus `sim_x/y/z` and `touching_net` |
+| `/drone/event` | std_msgs/String | `taking_off`, `took_off`, `landing`, `landed`, `hit_net` |
+| `/drone/cmd_vel` | geometry_msgs/Twist | the drone node moves the Gazebo model with this (body frame) |
 
 ## Files
 
@@ -40,5 +68,9 @@ button to move, wheel to zoom) and `rqt_image_view` with the drone camera.
 - `models/cage_lab`: the lab exported from `sim/blender/build_lab.py --export-obj`, and the net
   from `tools/make_net.py` (a real 3D rope mesh, 5.5 cm cells).
 - `models/mini3`: the drone and its camera. `models/pad`: the 50 cm pad.
+- `mini3_sim/drone_node.py`: turns sticks into Mini 3 motion with `dynamics.py` and
+  `mini3_params.json` (copies of `sim/dynamics.py` and `sim/mini3_params.json`, fitted from your
+  real flights), does takeoff and landing, keeps the drone off the net and publishes telemetry.
+- `mini3_sim/keyboard.py`: the keyboard window.
 - `mini3_sim/camera_exposure.py`: the camera's auto-exposure and warm colour. The mats are black,
   so like the real camera it brightens the picture a lot.

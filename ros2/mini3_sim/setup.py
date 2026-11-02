@@ -19,6 +19,7 @@ setup(
     name=PKG,
     version="0.1.0",
     packages=[PKG],
+    package_data={PKG: ["mini3_params.json"]},
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + PKG]),
         ("share/" + PKG, ["package.xml"]),
@@ -34,5 +35,7 @@ setup(
     license="MIT",
     entry_points={"console_scripts": [
         "camera_exposure = mini3_sim.camera_exposure:main",
+        "drone_node = mini3_sim.drone_node:main",
+        "keyboard = mini3_sim.keyboard:main",
     ]},
 )
