@@ -65,7 +65,8 @@ episode_0001_20261102_221808/
 
 1. When the simulator starts, the pad and the drone are placed on the cells of the current
    plan setup (3 x 3 grid of the cage, the app's 72 pad/drone layouts x 3 repeats). The keyboard
-   window shows it, for example "pad NW, drone NE, pad is 2 west".
+   window shows it, for example "pad NW, drone NE, pad is 2 west". As in your real episodes,
+   the drone faces the pad (within about 5 degrees, like aiming by eye).
 2. T to take off, R to start recording.
 3. Fly to the pad and land (L, or hold S below 0.6 m). Recording stops by itself just after
    touchdown, and the app's episode check runs (shown in the window).

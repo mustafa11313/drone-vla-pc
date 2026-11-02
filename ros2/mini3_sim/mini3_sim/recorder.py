@@ -20,6 +20,7 @@ How an episode goes (as with the real drone):
     2. T takes off. R starts recording (the record button on the controller).
     3. Fly to the pad and land (L, or hold S low). Recording stops by itself after touchdown,
        and the episode is checked.
+       The drone faces the pad, as in the real episodes.
     4. O marks it a success: the next setup of the plan is placed.
        F marks it a fail: the same setup is placed again so you can fly it again.
 
@@ -94,7 +95,7 @@ class Recorder(Node):
         self.declare_parameter("out_dir", os.path.expanduser("~/mini3_sim_episodes"))
         self.declare_parameter("instruction", INSTRUCTION)
         self.declare_parameter("grid_step", 2.0 / 3.0)       # m between grid cell centres
-        self.declare_parameter("start_heading_deg", 0.0)     # 0 = the drone faces cage north
+        self.declare_parameter("heading_jitter_deg", 5.0)    # the pilot points the nose at the pad by eye
         self.declare_parameter("world", "cage_lab")
         self.declare_parameter("place_on_start", True)
         self.out_dir = self.get_parameter("out_dir").value
@@ -163,8 +164,13 @@ class Recorder(Node):
         step = self.get_parameter("grid_step").value
         px, py = cell_xy(s["pad"], step)
         dx, dy = cell_xy(s["drone"], step)
+        # As in the real episodes, the drone starts facing the pad, so the camera sees it after
+        # takeoff. The pilot aims by eye, so a few degrees of error are added.
+        jitter = self.get_parameter("heading_jitter_deg").value
+        self.start_heading = (np.degrees(np.arctan2(px - dx, py - dy))
+                              + random.uniform(-jitter, jitter)) % 360.0
         # Gazebo yaw is counter-clockwise from east; heading is clockwise from north
-        yaw = np.radians(90.0 - self.get_parameter("start_heading_deg").value)
+        yaw = np.radians(90.0 - self.start_heading)
         ok = self.set_pose("pad", px, py, 0.0, 0.0) and self.set_pose("mini3", dx, dy, 0.05, yaw)
         self.message = ("placed: " if ok else "could not move the models: ") + self.describe()
         self.get_logger().info(self.message)
@@ -259,6 +265,7 @@ class Recorder(Node):
                       "drone": NAMES[s["drone"]], "pad_east_grid": (s["pad"] % 3) - (s["drone"] % 3),
                       "pad_north_grid": (s["drone"] // 3) - (s["pad"] // 3)})
         d.update({"gimbal_pitch_target": GIMBAL_PITCH_DEG, "speed_mode": "Normal", "start_heading": "north",
+                  "start_heading_deg": round(getattr(self, "start_heading", 0.0), 1),
                   "simulator": True})
         with open(os.path.join(self.ep_dir, f"{self.ep_no}_setup.json"), "w") as f:
             json.dump(d, f, indent=2)
