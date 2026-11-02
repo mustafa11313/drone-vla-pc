@@ -59,7 +59,7 @@ GIMBAL_PITCH_DEG = -50.0
 PLAN_SIZE = 216               # 72 layouts x 3 repeats
 STOP_AFTER_LANDED_S = 0.7     # real episodes go on ~0.7 s after touchdown until the camera stops
 FRAME_MAX_AGE_S = 0.1         # FrameRecorder.MAX_AGE_MS
-WRITE_DELAY_S = 0.3
+MAX_FRAME_LAG_S = 3.0         # wait at most this long (sim time) for a frame still being rendered
 SAVE_SIZE = (1280, 720)
 JPEG_QUALITY = 90
 
@@ -106,8 +106,8 @@ class Recorder(Node):
 
         self.tel = None
         self.frame = None            # newest (rgb array, sim time it was taken)
-        self.frames = deque(maxlen=30)   # recent (sim time, rgb), so each row gets the right frame
-        self.tels = deque(maxlen=60)     # recent (sim time, telemetry)
+        self.frames = deque(maxlen=90)   # recent (sim time, rgb), so each row gets the right frame
+        self.tels = deque(maxlen=200)     # recent (sim time, telemetry)
         self.lock = threading.Lock()
         self.recording = False
         self.ep_dir = None
@@ -218,8 +218,8 @@ class Recorder(Node):
             c = "stop" if self.recording else "start"
         if c == "start":
             self.start()
-        elif c == "stop":
-            self.stop()
+        elif c == "stop" and self.recording and self.stop_at is None:
+            self.stop_at = self.now()          # rows up to now are still written, then it stops
         elif c in ("success", "fail"):
             self.finish(c == "success")
         elif c == "place":
@@ -280,12 +280,17 @@ class Recorder(Node):
         # a row every 100 ms of simulated time (the app: every 100 ms). Simulated, not wall time,
         # so the data is right even when the laptop runs Gazebo slower than real time.
         now = self.now()
-        # Rows are written WRITE_DELAY_S late, so that a frame which is still being rendered or
-        # passed on when its 100 ms tick comes is not counted as missing.
-        while self.recording and now - WRITE_DELAY_S >= self.next_tick:
+        # Camera frames reach ROS later than the simulated moment they show (rendering takes time:
+        # about 0.75 s with the Gazebo window open on a laptop). A row is therefore written only
+        # once a frame taken at or after its tick has arrived, so no row misses its frame.
+        end = self.stop_at if self.stop_at is not None else now
+        with self.lock:
+            newest = self.frames[-1][0] if self.frames else float("-inf")
+        while (self.recording and self.next_tick <= end
+               and (newest >= self.next_tick or now - self.next_tick > MAX_FRAME_LAG_S)):
             self.write_row(self.next_tick)
             self.next_tick += 0.1
-        if self.stop_at is not None and now >= self.stop_at:
+        if self.stop_at is not None and self.next_tick > self.stop_at:
             self.stop()
 
     @staticmethod
