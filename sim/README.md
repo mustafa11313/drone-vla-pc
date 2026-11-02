@@ -59,6 +59,20 @@ on the simulated camera matching the real one (field of view, gimbal angle), so 
 shadow mode (`steps.csv`, `pad_y` when the pilot is right above the pad) before changing the
 default.
 
+## The lab in 3D (Blender)
+
+`sim/blender/build_lab.py` builds the lab around the cage as a real 3D scene in Blender, from
+simple shapes placed from the lab video: the cage (black posts, sagging rope net, black worn
+puzzle mats, the pad), the desks, cabinet, bench, fume extractor, robots, walls, ducts and
+lights. It renders outside views and drone-camera views, with the drone's auto-exposure (the
+floor is black, so the camera brightens it a lot) and warm white balance.
+
+    pip install bpy pillow numpy        # Blender as a Python module, no GPU needed
+    python3 sim/blender/build_lab.py --save lab.blend --previews previews/
+
+Positions are estimates; change them in `build_surroundings`. About 20 s per frame on 4 CPU
+cores, so it is not yet used inside `sim/run.py` (next step: a fast renderer for flights).
+
 ## Limits of this first version
 
 - The picture is drawn from simple shapes. A VLA trained on real frames will probably fly worse
