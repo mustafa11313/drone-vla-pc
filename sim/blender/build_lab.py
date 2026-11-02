@@ -573,6 +573,87 @@ def drone_frame(x, y, z, heading_deg, res=(320, 180), samples=16, target=0.42, t
     return (np.clip(a, 0, 1) * 255).astype(np.uint8)
 
 
+# ---------------------------------------------------------------- light probes for the fast renderer
+#
+# sim/render.py draws the inside of the cage itself (mats, pad, net, posts) in a few ms. For
+# everything seen through the net it looks up "probes": the lab rendered here by Cycles as six
+# 90-degree pictures (a cube) plus a depth map, from a grid of points inside the cage. The depth
+# lets render.py correct the parallax between the drone and the nearest probes.
+
+FACES = {   # name: (forward, up); right = forward x up
+    "px": ((1, 0, 0), (0, 0, 1)), "nx": ((-1, 0, 0), (0, 0, 1)),
+    "py": ((0, 1, 0), (0, 0, 1)), "ny": ((0, -1, 0), (0, 0, 1)),
+    "pz": ((0, 0, 1), (0, 1, 0)), "nz": ((0, 0, -1), (0, 1, 0)),
+}
+PROBE_GRID = dict(x=(-0.7, 0.0, 0.7), y=(-0.7, 0.0, 0.7), z=(0.4, 1.2, 2.0, 2.8))
+if os.environ.get("PROBE_TEST"):
+    PROBE_GRID = dict(x=(0.0,), y=(0.0,), z=(1.2,))
+HIDE_FOR_PROBES = ("net", "post_", "top_", "mid_", "pad")
+
+
+def _face_camera(pos, face, res):
+    from mathutils import Matrix
+    f, u = (Vector(v) for v in FACES[face])
+    r = f.cross(u)
+    cam = camera(f"probe_{face}", pos, hfov=90.0)
+    cam.data.sensor_fit = "HORIZONTAL"
+    cam.rotation_mode = "QUATERNION"
+    cam.rotation_quaternion = Matrix((r, u, -f)).transposed().to_quaternion()
+    return cam
+
+
+def _face_dirs(face, n):
+    f, u = (np.array(v, float) for v in FACES[face])
+    r = np.cross(f, u)
+    c = (np.arange(n) + 0.5) / n * 2 - 1
+    X, Y = np.meshgrid(c, -c)                     # row 0 = top of the picture
+    d = f + X[..., None] * r + Y[..., None] * u
+    return d / np.linalg.norm(d, axis=-1, keepdims=True)
+
+
+def bake_probes(out, res=320, depth_res=64, samples=32):
+    sc = bpy.context.scene
+    for o in bpy.data.objects:
+        if o.name.startswith(HIDE_FOR_PROBES):
+            o.hide_render = True
+    deps = bpy.context.evaluated_depsgraph_get()
+    g = PROBE_GRID
+    pos = np.array([(x, y, z) for x in g["x"] for y in g["y"] for z in g["z"]], np.float32)
+    rgb = np.zeros((len(pos), 6, res, res, 3), np.float16)
+    depth = np.zeros((len(pos), 6, depth_res, depth_res), np.float16)
+    sc.render.resolution_x = sc.render.resolution_y = res
+    sc.cycles.samples = samples
+    sc.render.image_settings.file_format = "OPEN_EXR"
+    tmp = "/tmp/_probe.exr"
+    for i, p in enumerate(pos):
+        for k, face in enumerate(FACES):
+            cam = _face_camera(tuple(p), face, res)
+            sc.camera = cam
+            sc.render.filepath = tmp
+            bpy.ops.render.render(write_still=True)
+            im = bpy.data.images.load(tmp)
+            rgb[i, k] = np.array(im.pixels[:], np.float32).reshape(res, res, 4)[::-1, :, :3]
+            bpy.data.images.remove(im)
+            bpy.data.objects.remove(cam)
+            dirs = _face_dirs(face, depth_res).reshape(-1, 3)
+            dd = np.empty(len(dirs), np.float32)
+            for j, v in enumerate(dirs):
+                hit, loc, *_ = sc.ray_cast(deps, Vector(tuple(p)), Vector(tuple(v)))
+                dd[j] = (loc - Vector(tuple(p))).length if hit else 30.0
+            depth[i, k] = dd.reshape(depth_res, depth_res)
+        print(f"probe {i + 1}/{len(pos)}", flush=True)
+    # brightness of the black mats under the same light, so render.py can match its own floor
+    cam = _face_camera((0.0, 0.0, 1.2), "nz", res)
+    sc.camera = cam
+    bpy.ops.render.render(write_still=True)
+    im = bpy.data.images.load(tmp)
+    mats = np.array(im.pixels[:], np.float32).reshape(res, res, 4)[res // 3: 2 * res // 3, res // 3: 2 * res // 3, :3]
+    bpy.data.images.remove(im)
+    np.savez_compressed(out, pos=pos, rgb=rgb, depth=depth, faces=np.array(list(FACES)),
+                        mat_radiance=np.float32(mats.mean()))
+    print("probes ->", out)
+
+
 def build(pad_xy=(0.0, 0.0), pad_yaw=0.0):
     clear()
     M = materials()
@@ -601,10 +682,14 @@ def main(argv):
     ap.add_argument("--previews", help="render outside and drone views into this folder")
     ap.add_argument("--samples", type=int, default=24)
     ap.add_argument("--only", nargs="*", help="names of views to render")
+    ap.add_argument("--probes", help="bake the light probes for sim/render.py into this .npz")
+    ap.add_argument("--probe-res", type=int, default=320)
     a = ap.parse_args(argv)
     build()
     if a.save:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save))
+    if a.probes:
+        bake_probes(os.path.abspath(a.probes), res=a.probe_res, samples=a.samples)
     if a.previews:
         os.makedirs(a.previews, exist_ok=True)
         for name, loc, tgt in OUTSIDE_VIEWS:

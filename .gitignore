@@ -8,3 +8,4 @@ __pycache__/
 *.npy
 logs/
 sim/blender/tex/
+sim/blender/probes.npz

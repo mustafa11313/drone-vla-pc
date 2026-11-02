@@ -258,7 +258,111 @@ def lab_wall_colour(tex, p, side):
     return out
 
 
+PROBES_FILE = os.environ.get("SIM_PROBES", os.path.join(os.path.dirname(__file__), "blender", "probes.npz"))
+FACE_AXES = {"px": ((1, 0, 0), (0, 0, 1)), "nx": ((-1, 0, 0), (0, 0, 1)),
+             "py": ((0, 1, 0), (0, 0, 1)), "ny": ((0, -1, 0), (0, 0, 1)),
+             "pz": ((0, 0, 1), (0, 1, 0)), "nz": ((0, 0, -1), (0, 1, 0))}
+
+
+MAX_PROBES = 4          # blend at most this many of the nearest probes
+PARALLAX_STEPS = 1
+LAB_PROBE_GAIN = 0.4    # lab vs black mats as the drone camera sees them (tuned on real frames)
+
+
+class Probes:
+    """The lab as rendered by Blender (sim/blender/build_lab.py --probes): cube pictures with
+    depth from a grid of points in the cage. Looked up for the rays that pass the net."""
+    _cache = {}
+
+    def __init__(self, path):
+        z = np.load(path)
+        self.pos = z["pos"].astype(np.float32)
+        self.rgb = z["rgb"]                             # (P, 6, R, R, 3) linear, float16
+        self.depth = z["depth"].astype(np.float32)[..., None]   # (P, 6, r, r, 1)
+        faces = [str(f) for f in z["faces"]]
+        ax = [FACE_AXES[f] for f in faces]
+        self.fwd = np.array([a[0] for a in ax], np.float32)
+        self.up = np.array([a[1] for a in ax], np.float32)
+        self.right = np.cross(self.fwd, self.up)
+        self.xs, self.ys, self.zs = (np.unique(self.pos[:, i]) for i in range(3))
+        self.mat_radiance = float(z["mat_radiance"])
+
+    @classmethod
+    def get(cls, path=None):
+        path = path or PROBES_FILE
+        if path not in cls._cache:
+            cls._cache[path] = cls(path) if os.path.exists(path) else None
+        return cls._cache[path]
+
+    def _lookup(self, img, i, d):
+        """Sample cube i of `img` (P, 6, n, n, C) in directions d (N x 3), nearest texel."""
+        a = np.abs(d)
+        m = np.argmax(a, 1)
+        sign = d[np.arange(len(d)), m] > 0
+        face = np.where(m == 0, np.where(sign, 0, 1), np.where(m == 1, np.where(sign, 2, 3), np.where(sign, 4, 5)))
+        f, r, u = self.fwd[face], self.right[face], self.up[face]
+        k = np.einsum("ij,ij->i", d, f)
+        x = np.einsum("ij,ij->i", d, r) / k
+        y = np.einsum("ij,ij->i", d, u) / k
+        n = img.shape[2]
+        col = np.clip(((x + 1) / 2 * n).astype(int), 0, n - 1)
+        row = np.clip(((1 - y) / 2 * n).astype(int), 0, n - 1)
+        return img[i, face, row, col]
+
+    def _weights(self, o):
+        out = []
+        idx = []
+        for axis, vals in zip(o, (self.xs, self.ys, self.zs)):
+            v = np.clip(axis, vals[0], vals[-1])
+            j = int(np.clip(np.searchsorted(vals, v) - 1, 0, len(vals) - 2)) if len(vals) > 1 else 0
+            t = (v - vals[j]) / (vals[j + 1] - vals[j]) if len(vals) > 1 else 0.0
+            idx.append((j, min(j + 1, len(vals) - 1)))
+            out.append((1 - t, t))
+        res = []
+        for a in range(2):
+            for b in range(2):
+                for c in range(2):
+                    w = out[0][a] * out[1][b] * out[2][c]
+                    if w > 1e-3:
+                        p = (self.xs[idx[0][a]], self.ys[idx[1][b]], self.zs[idx[2][c]])
+                        i = int(np.argmin(np.abs(self.pos - np.array(p, np.float32)).sum(1)))
+                        res.append((i, w))
+        res = sorted(res, key=lambda r: -r[1])[:MAX_PROBES]
+        tot = sum(w for _, w in res)
+        return [(i, w / tot) for i, w in res]
+
+    def colour(self, o, d):
+        """Linear colour seen from o along d, blended from the nearest probes with parallax
+        correction: where the probe's ray hits, seen from the drone."""
+        o = np.asarray(o, np.float32)
+        d = d.astype(np.float32)
+        out = np.zeros((len(d), 3), np.float32)
+        for i, w in self._weights(o):
+            off = o - self.pos[i]
+            dep = self.depth
+            b = d @ off                                       # d . off
+            c = float(off @ off)
+            t = self._lookup(dep, i, d)[:, 0]
+            for _ in range(PARALLAX_STEPS):   # find t with |off + d t| = probe depth in that direction
+                q = d * t[:, None] + off
+                dist = self._lookup(dep, i, q / np.linalg.norm(q, axis=1, keepdims=True))[:, 0]
+                t = -b + np.sqrt(np.maximum(b * b - c + dist * dist, 0))
+            q = d * t[:, None] + off
+            q /= np.linalg.norm(q, axis=1, keepdims=True)
+            out += w * self._lookup(self.rgb, i, q).astype(np.float32)
+        return out
+
+
 def _lab_colour(o, d, tex):
+    pr = Probes.get() if tex.mat is not None else None
+    if pr is not None:
+        flat = d.reshape(-1, 3)
+        scale = LAB_PROBE_GAIN * float(tex.mat.mean()) / max(pr.mat_radiance, 1e-6)   # Blender light -> our units
+        return (pr.colour(o, flat) * scale).reshape(d.shape)
+    return _lab_colour_photos(o, d, tex)
+
+
+def _lab_colour_photos(o, d, tex):
     t, face = _box_exit(o, d, LAB_BOX, LAB_HEIGHT)
     p = o + d * t[..., None]
     col = np.empty(t.shape + (3,), np.float32)
@@ -312,7 +416,14 @@ def render(x, y, z, heading, scene=None, cam=None):
     post = side & (np.abs(a) > CAGE_HALF - POST)
     behind = wall & ~strand & ~post
     if behind.any():
-        col[behind] = _lab_colour(o, d[behind], tex) * 0.92      # seen through the net
+        if ss > 1 and Probes.get() is not None and tex.mat is not None:
+            # the lab behind the net is blurry anyway: look it up at output size, then enlarge
+            dl = d[ss // 2::ss, ss // 2::ss]
+            lab = _lab_colour(o, dl.reshape(-1, 3), tex).reshape(dl.shape)
+            lab = lab.repeat(ss, 0).repeat(ss, 1)
+            col[behind] = lab[behind] * 0.92
+        else:
+            col[behind] = _lab_colour(o, d[behind], tex) * 0.92      # seen through the net
     col[strand] = NET
     col[post] = POST_COL
     # light: overhead lamps make the floor near the centre a bit brighter, far things dimmer

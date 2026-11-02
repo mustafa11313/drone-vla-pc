@@ -149,3 +149,32 @@ def test_run_cli(tmp_path):
     rows = run_main(["--pilot", "none", "--policy", "seek", "--missions", "1", "--seed", "0",
                      "--max-time", "30", "--out", str(tmp_path)])
     assert len(rows) == 1 and (tmp_path / "summary.csv").exists()
+
+
+def test_probe_lookup_faces_and_parallax(tmp_path):
+    """Lab probes: each cube face is found in the right direction, and a point seen from the
+    drone (not from the probe) comes out where it really is (parallax correction)."""
+    from sim.render import Probes, FACE_AXES
+    faces = list(FACE_AXES)
+    n = 32
+    rgb = np.zeros((1, 6, n, n, 3), np.float16)
+    for k in range(6):
+        rgb[0, k] = k + 1                       # face k has value k + 1
+    # a room 4 m away on every side: depth along a direction = 4 / max |component|
+    c = (np.arange(16) + 0.5) / 16 * 2 - 1
+    X, Y = np.meshgrid(c, -c)
+    depth = np.zeros((1, 6, 16, 16), np.float16)
+    for k, f in enumerate(faces):
+        fw, up = (np.array(v, float) for v in FACE_AXES[f])
+        d = fw + X[..., None] * np.cross(fw, up) + Y[..., None] * up
+        d /= np.linalg.norm(d, axis=-1, keepdims=True)
+        depth[0, k] = 4.0 / np.abs(d).max(-1)
+    p = tmp_path / "probes.npz"
+    np.savez(p, pos=np.zeros((1, 3), np.float32), rgb=rgb, depth=depth, faces=np.array(faces),
+             mat_radiance=np.float32(1))
+    pr = Probes(str(p))
+    dirs = np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], np.float32)
+    assert pr.colour((0, 0, 0), dirs)[:, 0].tolist() == [1, 2, 3, 4, 5, 6]
+    # drone 1 m east of the probe looking north-west at 45 deg: hits the north wall (y = 4)
+    d = np.array([[-1, 1, 0]], np.float32) / np.sqrt(2)
+    assert pr.colour((1.0, 0, 0), d)[0, 0] == 3
