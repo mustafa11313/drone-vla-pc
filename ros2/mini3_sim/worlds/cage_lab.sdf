@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!-- The flight cage in the lab. x = east, y = north, z = up; the cage centre on the floor is the
+     origin. The drone starts on the floor south of the pad, facing north (Gazebo yaw 90 deg). -->
+<sdf version="1.9">
+  <world name="cage_lab">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="ignition-gazebo-physics-system" name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system" name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system" name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <scene>
+      <ambient>0.55 0.55 0.55 1</ambient>
+      <background>0.8 0.8 0.8 1</background>
+      <shadows>false</shadows>
+      <grid>false</grid>
+    </scene>
+
+    <!-- the strip lights under the ceiling: one soft light from above + a few lamps -->
+    <light type="directional" name="ceiling">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 4.4 0 0 0</pose>
+      <diffuse>0.55 0.55 0.55 1</diffuse>
+      <specular>0.1 0.1 0.1 1</specular>
+      <direction>0.1 0.2 -1</direction>
+    </light>
+    <light type="point" name="lamp_cage">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 4.3 0 0 0</pose>
+      <diffuse>0.6 0.6 0.58 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <attenuation><range>12</range><constant>0.6</constant><linear>0.05</linear><quadratic>0.01</quadratic></attenuation>
+    </light>
+    <light type="point" name="lamp_west">
+      <cast_shadows>false</cast_shadows>
+      <pose>-4 0 4.3 0 0 0</pose>
+      <diffuse>0.4 0.4 0.39 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <attenuation><range>12</range><constant>0.6</constant><linear>0.05</linear><quadratic>0.01</quadratic></attenuation>
+    </light>
+    <light type="point" name="lamp_south">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 -4 4.3 0 0 0</pose>
+      <diffuse>0.4 0.4 0.39 1</diffuse>
+      <specular>0.05 0.05 0.05 1</specular>
+      <attenuation><range>12</range><constant>0.6</constant><linear>0.05</linear><quadratic>0.01</quadratic></attenuation>
+    </light>
+
+    <include>
+      <uri>model://cage_lab</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://pad</uri>
+      <pose>0.2 0.3 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://mini3</uri>
+      <pose>0 -0.6 0.05 0 0 1.5708</pose>
+    </include>
+  </world>
+</sdf>

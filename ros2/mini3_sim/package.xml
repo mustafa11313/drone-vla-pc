@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>mini3_sim</name>
+  <version>0.1.0</version>
+  <description>DJI Mini 3 in the lab flight cage, in Gazebo (Fortress) with ROS 2 Humble: world, drone,
+    camera topic, keyboard flying, recording in the same format as the real phone app.</description>
+  <maintainer email="mustafaalmohammad123@gmail.com">Ali</maintainer>
+  <license>MIT</license>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+  <export><build_type>ament_python</build_type></export>
+</package>

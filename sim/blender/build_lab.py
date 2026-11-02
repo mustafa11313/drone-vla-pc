@@ -680,6 +680,45 @@ def bake_probes(out, res=320, depth_res=64, samples=32):
     print("probes ->", out)
 
 
+# ---------------------------------------------------------------- export for Gazebo (ROS 2 simulator)
+
+EXPORT_SKIP = ("net", "pad")      # Gazebo gets its own 3D net and a movable pad
+
+
+def _tile_uvs(obj, size):
+    """UVs in metres / size, so an image texture repeats every `size` m (OBJ has no mapping nodes)."""
+    me = obj.data
+    if not me.uv_layers:
+        me.uv_layers.new()
+    uv = me.uv_layers.active.data
+    mw = obj.matrix_world
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            co = mw @ me.vertices[me.loops[li].vertex_index].co
+            uv[li].uv = (co.x / size, co.y / size)
+
+
+def export_obj(out_dir):
+    """The lab and cage frame (no net, no pad) as one OBJ + MTL + textures, z up, metres."""
+    os.makedirs(out_dir, exist_ok=True)
+    for o in list(bpy.data.objects):
+        if o.name.startswith(EXPORT_SKIP) or o.type in ("CAMERA", "LIGHT"):
+            bpy.data.objects.remove(o)
+    for o in list(bpy.data.objects):
+        if o.type == "CURVE":                     # hoses -> meshes
+            bpy.ops.object.select_all(action="DESELECT")
+            o.select_set(True)
+            bpy.context.view_layer.objects.active = o
+            bpy.ops.object.convert(target="MESH")
+    _tile_uvs(bpy.data.objects["cage_mats"], 2.4)
+    _tile_uvs(bpy.data.objects["lab_floor"], 4.0)
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.wm.obj_export(filepath=os.path.join(out_dir, "lab.obj"), export_selected_objects=True,
+                          forward_axis="Y", up_axis="Z", export_materials=True, path_mode="COPY",
+                          export_uv=True, export_normals=True, apply_modifiers=True)
+    print("obj ->", out_dir)
+
+
 def build(pad_xy=(0.0, 0.0), pad_yaw=0.0):
     clear()
     M = materials()
@@ -711,10 +750,14 @@ def main(argv):
     ap.add_argument("--probes", help="bake the light probes for sim/render.py into this .npz")
     ap.add_argument("--probe-res", type=int, default=320)
     ap.add_argument("--redo-depths", help="recompute only the depth maps of this probe file")
+    ap.add_argument("--export-obj", help="write the lab as OBJ for Gazebo into this folder")
     a = ap.parse_args(argv)
     build()
     if a.save:
         bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(a.save))
+    if a.export_obj:
+        export_obj(os.path.abspath(a.export_obj))
+        return
     if a.redo_depths:
         redo_depths(os.path.abspath(a.redo_depths))
     if a.probes:
