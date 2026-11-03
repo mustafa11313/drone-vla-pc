@@ -39,6 +39,7 @@ import os
 import random
 import subprocess
 import threading
+import time
 from datetime import datetime
 from collections import deque
 from queue import Queue
@@ -173,7 +174,14 @@ class Recorder(Node):
                               + random.uniform(-jitter, jitter)) % 360.0
         # Gazebo yaw is counter-clockwise from east; heading is clockwise from north
         yaw = np.radians(90.0 - self.start_heading)
-        ok = self.set_pose("pad", px, py, 0.0, 0.0) and self.set_pose("mini3", dx, dy, 0.05, yaw)
+        # Gazebo sometimes loses the reply to a request ("Host unreachable"), so try a few times.
+        # Setting the same pose again does no harm.
+        for attempt in range(6):
+            ok = self.set_pose("pad", px, py, 0.0, 0.0) and self.set_pose("mini3", dx, dy, 0.05, yaw)
+            if ok:
+                break
+            self.get_logger().warn(f"moving the models failed (try {attempt + 1}), trying again")
+            time.sleep(1.0 + attempt)
         if ok:
             self.pad_xy = (px, py)
             self.placed_seq += 1

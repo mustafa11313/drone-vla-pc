@@ -186,6 +186,13 @@ class Autopilot(Node):
                 self.get_logger().info(f"finished: {self.ok_count} of {self.done} episodes landed on the pad")
                 self.go("finished")
                 return
+            # nothing placed for a while (a lost Gazebo reply): ask the recorder to place again
+            if (age > 20 and not st["recording"] and not st["waiting_for_result"]
+                    and tel.get("on_ground")):
+                self.get_logger().warn("no new setup after 20 s, asking the recorder to place it again")
+                self.rec_pub.publish(String(data="place"))
+                self.go("wait_setup")
+                return
             if (st["placed_seq"] > self.seen_seq and st.get("pad_xy") and tel.get("on_ground")
                     and not st["recording"] and not st["waiting_for_result"]):
                 self.seen_seq = st["placed_seq"]
