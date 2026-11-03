@@ -60,7 +60,12 @@ def check(ep):
     start = next((i for i, v in enumerate(yaw) if v > 0), None)
     if start is None or (start > 0 and visible(rows[start])):
         return True, "no search turn"
-    end = next((i for i in range(start, len(yaw)) if yaw[i] == 0), len(yaw) - 1)
+    # the turn ends where its stick is let go. A "face the pad" turn can follow straight away,
+    # its stick ramping up again before the rows show a 0, so end at the bottom of the first dip
+    peak = max(range(start, min(start + 20, len(yaw))), key=lambda i: yaw[i])
+    end = peak
+    while end + 1 < len(yaw) and yaw[end] > 0 and (yaw[end + 1] < yaw[end] or yaw[end + 1] == yaw[end] == yaw[peak]):
+        end += 1
     t = [int(r["time_ms"]) / 1000 for r in rows]
     seen = next((i for i in range(start, end) if visible(rows[i], margin=3.0)), None)
     turn = t[end] - t[start]
