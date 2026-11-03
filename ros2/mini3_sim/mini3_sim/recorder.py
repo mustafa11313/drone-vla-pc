@@ -116,6 +116,9 @@ class Recorder(Node):
         # "plan": the app's 3 x 3 grid plan, nose to the pad. "random": any positions and heading,
         # the pad often out of view at the start (the drone has to turn to find it).
         self.declare_parameter("setups", "plan")
+        # more than 216, e.g. to record replacements for deleted search episodes (setups 217, 218...)
+        self.declare_parameter("plan_size", PLAN_SIZE)
+        self.plan_size = int(self.get_parameter("plan_size").value)
         self.random_mode = self.get_parameter("setups").value == "random"
         self.out_dir = self.get_parameter("out_dir").value
         os.makedirs(self.out_dir, exist_ok=True)
@@ -161,17 +164,17 @@ class Recorder(Node):
         json.dump({"next_index": self.next_index}, open(self.progress_file, "w"))
 
     def current(self):
-        if self.next_index >= PLAN_SIZE:
+        if self.next_index >= self.plan_size or (not self.random_mode and self.next_index >= PLAN_SIZE):
             return None
         return make_random(self.next_index) if self.random_mode else self.plan[self.next_index]
 
     def describe(self):
         s = self.current()
         if s is None:
-            return f"plan finished: all {PLAN_SIZE} episodes done"
+            return f"plan finished: all {self.plan_size} episodes done"
         if self.random_mode:
             (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
-            return (f"episode {s['number']}/{PLAN_SIZE} (search): drone at ({dx:.2f}, {dy:.2f}) facing "
+            return (f"episode {s['number']}/{self.plan_size} (search): drone at ({dx:.2f}, {dy:.2f}) facing "
                     f"{s['heading']:.0f} deg, pad at ({px:.2f}, {py:.2f})")
         e = (s["pad"] % 3) - (s["drone"] % 3)
         n = (s["drone"] // 3) - (s["pad"] // 3)

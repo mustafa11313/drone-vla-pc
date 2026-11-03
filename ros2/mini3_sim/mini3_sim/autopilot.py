@@ -44,7 +44,7 @@ CAM_FWD, CAM_DOWN = 0.1, 0.015         # camera position on the drone (m)
 CAM_PITCH, HFOV, VFOV = 50.0, 62.0, 37.3   # deg, as in models/mini3/model.sdf (640 x 360)
 
 
-def pad_in_view(fwd, right, z, margin=4.0):
+def pad_in_view(fwd, right, z, margin=4.0, vmargin=None):
     """True if the pad centre is inside the camera picture, `margin` degrees in from the edges
     (a negative margin also accepts a centre just outside, with most of the pad showing)."""
     f, d = fwd - CAM_FWD, z - CAM_DOWN               # forward and down from the camera
@@ -54,7 +54,8 @@ def pad_in_view(fwd, right, z, margin=4.0):
         return False
     x = math.degrees(math.atan(right / depth))       # left-right angle in the picture
     y = math.degrees(math.atan((d * math.cos(p) - f * math.sin(p)) / depth))   # up-down
-    return abs(x) < HFOV / 2 - margin and abs(y) < VFOV / 2 - margin
+    vmargin = margin if vmargin is None else vmargin
+    return abs(x) < HFOV / 2 - margin and abs(y) < VFOV / 2 - vmargin
 
 
 class Pilot:
@@ -110,7 +111,7 @@ class Pilot:
             # clockwise until the pad shows up, then let go after a human reaction time
             if clear and self.seen_at is None:        # it comes in from the right edge
                 self.seen_at = t
-            if self.seen_at is None and t - self.turn_start > 15.0:    # never came into view
+            if self.seen_at is None and t - self.turn_start > 30.0:    # never came into view
                 self.seen_at = t - self.react
             if self.seen_at is not None and t - self.seen_at >= self.react:
                 self.found = True
@@ -289,7 +290,9 @@ class Autopilot(Node):
             fwd, right, vf, vr = self.pad_offset()
             s = self.pilot.step(t, self.dt, fwd, right, vf, vr, tel["sim_z"],
                                 pad_in_view(fwd, right, tel["sim_z"], margin=-2.0),
-                                pad_in_view(fwd, right, tel["sim_z"], margin=6.0))
+                                # "clearly in view": well in from the side it enters from, but
+                                # anywhere up-down (a close pad shows near the bottom edge)
+                                pad_in_view(fwd, right, tel["sim_z"], margin=6.0, vmargin=0.0))
             if age > TIMEOUT_S and not self.pilot.landing:
                 self.pilot.phase, self.pilot.landing = "land", True
             self.send_sticks(s)

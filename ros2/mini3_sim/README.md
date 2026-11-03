@@ -118,6 +118,16 @@ only sees the camera cannot know which way is shorter. `setup.json` has `"search
 the drone and pad positions. The setups are fixed (seed 7000 + episode number), so a failed
 setup is flown again identically.
 
+Check recorded search episodes (an early version sometimes turned past a pad near the bottom of
+the picture), and move the bad ones aside:
+
+```
+python3 ~/drone-vla-pc/ros2/mini3_sim/tools/check_search_episodes.py ~/mini3_sim_episodes_search --move-bad
+```
+
+To record replacements, raise the plan size; new setups (217, 218, ...) follow on:
+`plan_size:=240` on the launch line records 24 more.
+
 ## Topics
 
 | Topic | Type | What |
