@@ -35,6 +35,7 @@ Differences from the real recording, on purpose:
   - The plan uses its own fixed shuffle (seed 2026), so its order differs from the app's.
 """
 import json
+import math
 import os
 import random
 import subprocess
@@ -77,6 +78,19 @@ def make_plan(seed=2026):
     return out
 
 
+def make_random(i, seed=7000):
+    """Setup i of the random ("search") set: drone anywhere, facing anywhere; pad anywhere 0.6-1.6 m
+    away (closer, the camera cannot see it; further, it is beyond the camera's view at 1.2 m).
+    The same i always gives the same setup, so a failed episode is flown again identically."""
+    rnd = random.Random(seed + i)
+    while True:
+        dx, dy = rnd.uniform(-0.65, 0.65), rnd.uniform(-0.65, 0.65)
+        px, py = rnd.uniform(-0.68, 0.68), rnd.uniform(-0.68, 0.68)
+        if 0.6 <= math.hypot(px - dx, py - dy) <= 1.6:
+            return {"number": i + 1, "repeat": 1, "drone_xy": (dx, dy), "pad_xy": (px, py),
+                    "heading": rnd.uniform(0.0, 360.0)}
+
+
 def cell_xy(i, step):
     """grid cell -> (x east, y north) of its centre; row 0 is the north row."""
     return ((i % 3) - 1) * step, (1 - i // 3) * step
@@ -99,6 +113,10 @@ class Recorder(Node):
         self.declare_parameter("heading_jitter_deg", 5.0)    # the pilot points the nose at the pad by eye
         self.declare_parameter("world", "cage_lab")
         self.declare_parameter("place_on_start", True)
+        # "plan": the app's 3 x 3 grid plan, nose to the pad. "random": any positions and heading,
+        # the pad often out of view at the start (the drone has to turn to find it).
+        self.declare_parameter("setups", "plan")
+        self.random_mode = self.get_parameter("setups").value == "random"
         self.out_dir = self.get_parameter("out_dir").value
         os.makedirs(self.out_dir, exist_ok=True)
         self.plan = make_plan()
@@ -143,12 +161,18 @@ class Recorder(Node):
         json.dump({"next_index": self.next_index}, open(self.progress_file, "w"))
 
     def current(self):
-        return self.plan[self.next_index] if self.next_index < PLAN_SIZE else None
+        if self.next_index >= PLAN_SIZE:
+            return None
+        return make_random(self.next_index) if self.random_mode else self.plan[self.next_index]
 
     def describe(self):
         s = self.current()
         if s is None:
             return f"plan finished: all {PLAN_SIZE} episodes done"
+        if self.random_mode:
+            (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
+            return (f"episode {s['number']}/{PLAN_SIZE} (search): drone at ({dx:.2f}, {dy:.2f}) facing "
+                    f"{s['heading']:.0f} deg, pad at ({px:.2f}, {py:.2f})")
         e = (s["pad"] % 3) - (s["drone"] % 3)
         n = (s["drone"] // 3) - (s["pad"] // 3)
         parts = ([f"{abs(n)} {'north' if n > 0 else 'south'}"] if n else []) + \
@@ -164,14 +188,18 @@ class Recorder(Node):
         if self.tel is not None and not self.tel.get("on_ground", True):
             self.message = "land first: the setup is placed only while the drone is on the ground"
             return
-        step = self.get_parameter("grid_step").value
-        px, py = cell_xy(s["pad"], step)
-        dx, dy = cell_xy(s["drone"], step)
-        # As in the real episodes, the drone starts facing the pad, so the camera sees it after
-        # takeoff. The pilot aims by eye, so a few degrees of error are added.
-        jitter = self.get_parameter("heading_jitter_deg").value
-        self.start_heading = (np.degrees(np.arctan2(px - dx, py - dy))
-                              + random.uniform(-jitter, jitter)) % 360.0
+        if self.random_mode:
+            (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
+            self.start_heading = s["heading"]
+        else:
+            step = self.get_parameter("grid_step").value
+            px, py = cell_xy(s["pad"], step)
+            dx, dy = cell_xy(s["drone"], step)
+            # As in the real episodes, the drone starts facing the pad, so the camera sees it after
+            # takeoff. The pilot aims by eye, so a few degrees of error are added.
+            jitter = self.get_parameter("heading_jitter_deg").value
+            self.start_heading = (np.degrees(np.arctan2(px - dx, py - dy))
+                                  + random.uniform(-jitter, jitter)) % 360.0
         # Gazebo yaw is counter-clockwise from east; heading is clockwise from north
         yaw = np.radians(90.0 - self.start_heading)
         # Gazebo sometimes loses the reply to a request ("Host unreachable"), so try a few times.
@@ -273,7 +301,12 @@ class Recorder(Node):
     def write_setup(self, stamp):
         s = self.current()
         d = {"started": stamp}
-        if s is not None:
+        if s is not None and self.random_mode:
+            (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
+            d.update({"plan_number": s["number"], "repeat": 1, "search": True,
+                      "drone_xy": [round(dx, 3), round(dy, 3)], "pad_xy": [round(px, 3), round(py, 3)],
+                      "pad_east_m": round(px - dx, 3), "pad_north_m": round(py - dy, 3)})
+        elif s is not None:
             d.update({"plan_number": s["number"], "repeat": s["repeat"], "pad": NAMES[s["pad"]],
                       "drone": NAMES[s["drone"]], "pad_east_grid": (s["pad"] % 3) - (s["drone"] % 3),
                       "pad_north_grid": (s["drone"] // 3) - (s["pad"] // 3)})
@@ -426,6 +459,7 @@ class Recorder(Node):
             "placed_seq": self.placed_seq,
             "pad_xy": self.pad_xy,
             "plan_done": self.current() is None,
+            "search": self.random_mode,
         })))
 
 

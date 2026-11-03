@@ -103,6 +103,21 @@ ros2 launch mini3_sim sim.launch.py autopilot:=true gui:=false camera_view:=fals
 `autopilot_episodes:=20` flies only 20. It continues the plan where it stopped
 (`plan_progress.json`), so you can stop with Ctrl+C and start again later.
 
+## Search episodes (a second set of 216)
+
+```
+ros2 launch mini3_sim sim.launch.py autopilot:=true setups:=random episodes:=$HOME/mini3_sim_episodes_search
+```
+
+Each setup puts the drone anywhere in the cage facing any direction, and the pad anywhere
+0.6-1.6 m away, so the pad is often not in view after takeoff. The autopilot then always turns
+clockwise (yaw stick 55-80 %) until the pad comes into view from the right, lets go after a
+human reaction time, sometimes turns to face the pad, and flies to it with pitch and roll
+(sideways first in some episodes). Always the same turning direction, because a model that
+only sees the camera cannot know which way is shorter. `setup.json` has `"search": true` and
+the drone and pad positions. The setups are fixed (seed 7000 + episode number), so a failed
+setup is flown again identically.
+
 ## Topics
 
 | Topic | Type | What |

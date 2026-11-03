@@ -40,10 +40,27 @@ TIMEOUT_S = 60.0         # a flight that takes longer is landed and marked fail
 MAX_TRIES = 3            # the same setup is flown at most this many times, then skipped
 
 
+CAM_FWD, CAM_DOWN = 0.1, 0.015         # camera position on the drone (m)
+CAM_PITCH, HFOV, VFOV = 50.0, 62.0, 37.3   # deg, as in models/mini3/model.sdf (640 x 360)
+
+
+def pad_in_view(fwd, right, z, margin=4.0):
+    """True if the pad centre is inside the camera picture, `margin` degrees in from the edges
+    (a negative margin also accepts a centre just outside, with most of the pad showing)."""
+    f, d = fwd - CAM_FWD, z - CAM_DOWN               # forward and down from the camera
+    p = math.radians(CAM_PITCH)
+    depth = f * math.cos(p) + d * math.sin(p)        # along the camera's axis (pinhole camera)
+    if depth <= 0.05:
+        return False
+    x = math.degrees(math.atan(right / depth))       # left-right angle in the picture
+    y = math.degrees(math.atan((d * math.cos(p) - f * math.sin(p)) / depth))   # up-down
+    return abs(x) < HFOV / 2 - margin and abs(y) < VFOV / 2 - margin
+
+
 class Pilot:
     """The stick logic for one flight. step() is called at 20 Hz and returns the 4 sticks."""
 
-    def __init__(self, rng):
+    def __init__(self, rng, search=False):
         self.rng = rng
         # this episode's pilot mood
         self.gain = rng.uniform(55, 95)               # stick % per metre of distance
@@ -57,6 +74,15 @@ class Pilot:
         self.phase = "start"
         self.until = 0.0
         self.landing = False
+        self.search = search
+        # search episodes: turn clockwise until the pad is in view (the only rule a model can learn
+        # from the camera), sometimes turn to face it, and use roll for sideways offsets
+        self.found = not search
+        self.seen_at = None
+        self.react = rng.uniform(0.15, 0.45)          # s from "pad in view" to letting go of yaw
+        self.turn_push = rng.uniform(55, 80)        # 55-80 % turns at about 15-35 deg/s
+        self.face_pad = rng.random() < 0.5            # turn to face the pad once found, or not
+        self.side_first_p = rng.uniform(0.25, 0.5) if search else 0.0
 
     def ramp_to(self, dt):
         for i in range(4):
@@ -64,7 +90,8 @@ class Pilot:
             step = (400.0 if i == 2 and self.landing else self.ramp) * dt
             self.sticks[i] += max(-step, min(step, d))
 
-    def step(self, t, dt, fwd, right, v_fwd, v_right, z):
+    def step(self, t, dt, fwd, right, v_fwd, v_right, z, visible=True, clear=True):
+        """visible: the pad is (at least half) in the picture; clear: well inside it."""
         """fwd/right: pad offset in the drone's frame (m); v_*: speeds in that frame (m/s)."""
         dist = math.hypot(fwd, right)
         speed = math.hypot(v_fwd, v_right)
@@ -79,9 +106,39 @@ class Pilot:
             if t >= self.until or z < 0.75:
                 self.target = [0, 0, 0, 0]
                 self.phase, self.until = "pause", t + self.rng.uniform(0.4, 1.0)
+        elif self.phase == "turn":
+            # clockwise until the pad shows up, then let go after a human reaction time
+            if clear and self.seen_at is None:        # it comes in from the right edge
+                self.seen_at = t
+            if self.seen_at is None and t - self.turn_start > 15.0:    # never came into view
+                self.seen_at = t - self.react
+            if self.seen_at is not None and t - self.seen_at >= self.react:
+                self.found = True
+                self.target = [0, 0, 0, 0]
+                self.phase, self.until = "pause", t + self.rng.uniform(0.3, 0.8)
+        elif self.phase == "face":
+            bearing = math.degrees(math.atan2(right, fwd))
+            if not visible or abs(bearing) < self.rng.uniform(3, 7) or t >= self.until:
+                self.target = [0, 0, 0, 0]
+                self.face_pad = False
+                self.phase, self.until = "pause", t + self.rng.uniform(0.3, 0.8)
+            else:
+                push = min(55.0, max(25.0, abs(bearing) * 1.5))
+                self.target = [0, 0, 0, math.copysign(push, bearing)]
         elif self.phase == "pause":
             self.target = [0, 0, 0, 0]
             if t >= self.until and speed < self.rng.uniform(0.08, 0.2):
+                bearing = math.degrees(math.atan2(right, fwd))
+                if not self.found:
+                    if visible:
+                        self.found = True
+                    else:
+                        self.target = [0, 0, 0, self.turn_push * self.rng.uniform(0.9, 1.1)]
+                        self.phase, self.seen_at, self.turn_start = "turn", None, t
+                        return self.finish(dt)
+                if self.face_pad and visible and abs(bearing) > 10 and dist > 0.4:
+                    self.phase, self.until = "face", t + 4.0
+                    return self.finish(dt)
                 if dist < self.precision:
                     self.phase, self.landing = "land", True
                 else:
@@ -107,6 +164,9 @@ class Pilot:
                 self.phase, self.until = "pause", t + self.rng.uniform(0.3, 1.0)
         if self.phase == "land":
             self.target = [0, 0, -100, 0]
+        return self.finish(dt)
+
+    def finish(self, dt):
         self.ramp_to(dt)
         return list(self.sticks)
 
@@ -115,6 +175,10 @@ class Pilot:
             p = min(self.max_push, max(self.min_push, self.gain * abs(err)))
             return math.copysign(p * self.rng.uniform(0.85, 1.15), err)
         both = abs(fwd) > 0.12 and abs(right) > 0.12 and self.rng.random() < self.combine_p
+        if not both and abs(right) > 0.12 and self.rng.random() < self.side_first_p:
+            self.target = [0, push(right), 0, 0]          # sideways first, as you often did
+            self.push0 = list(self.target)
+            return
         self.target = [0, 0, 0, 0]
         if both:
             self.target = [push(fwd), push(right), 0, 0]
@@ -216,14 +280,16 @@ class Autopilot(Node):
         elif self.state == "rec_wait":
             self.send_sticks([0, 0, 0, 0])
             if st["recording"]:
-                self.pilot = Pilot(self.rng)
+                self.pilot = Pilot(self.rng, search=bool(st.get("search")))
                 self.go("fly")
             elif age > 5:
                 self.rec_pub.publish(String(data="start"))
                 self.go("rec_wait")
         elif self.state == "fly":
             fwd, right, vf, vr = self.pad_offset()
-            s = self.pilot.step(t, self.dt, fwd, right, vf, vr, tel["sim_z"])
+            s = self.pilot.step(t, self.dt, fwd, right, vf, vr, tel["sim_z"],
+                                pad_in_view(fwd, right, tel["sim_z"], margin=-2.0),
+                                pad_in_view(fwd, right, tel["sim_z"], margin=6.0))
             if age > TIMEOUT_S and not self.pilot.landing:
                 self.pilot.phase, self.pilot.landing = "land", True
             self.send_sticks(s)
