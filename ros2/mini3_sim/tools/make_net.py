@@ -1,10 +1,11 @@
 """
 make_net.py  -  the cage net as a real 3D mesh for Gazebo (models/cage_lab/meshes/net.obj).
 
-Thin black rope strips on the 4 sides and the top of the 2 x 2 x 3 m cage, a square mesh of
-about 5.5 cm, sagging a little inwards and slightly irregular like the real net, plus a strip of
-extra net lying on the floor along each side. Both faces of every strip are written, so it is
-visible from inside and outside.
+Black knotted rope on the 4 sides and the top of the 2 x 2 x 2 m cage, as in the lab photos:
+square mesh of about 10 cm, a knot at every crossing, the sides sagging a little inwards, the
+roof sagging clearly in the middle, a loose rope hanging across each side, and a strip of extra
+net lying on the floor along each side. Both faces of every strip are written, so it is visible
+from inside and outside.
 
     python3 tools/make_net.py
 """
@@ -12,9 +13,12 @@ import math, os
 
 import numpy as np
 
-HALF, HEIGHT = 1.0, 3.0
-CELL = 0.055          # m, mesh size
-STRAND = 0.004        # m, rope width
+HALF, HEIGHT = 1.0, 2.0
+CELL = 0.10           # m, mesh size
+STRAND = 0.007        # m, rope width
+KNOT = 0.016          # m, knot size at the crossings
+WALL_SAG = 0.06       # m, sides bulge inwards mid-wall (drone_node.py uses the same shape)
+ROOF_SAG = 0.15       # m, the roof hangs down in the middle
 SEGMENTS = 24         # pieces per rope (for the sag)
 OUT = os.path.join(os.path.dirname(__file__), "..", "models", "cage_lab", "meshes", "net.obj")
 
@@ -22,9 +26,9 @@ OUT = os.path.join(os.path.dirname(__file__), "..", "models", "cage_lab", "meshe
 def side_point(face, a, b, rng_phase):
     """a along the face (-HALF..HALF), b up (0..HEIGHT) for walls, or b across for the top."""
     if face == "top":
-        sag = 0.06 * (1 - (a / HALF) ** 2) * (1 - (b / HALF) ** 2)
+        sag = ROOF_SAG * (1 - (a / HALF) ** 2) * (1 - (b / HALF) ** 2)
         return np.array([a, b, HEIGHT - sag])
-    inward = 0.06 * (1 - (a / HALF) ** 2) * math.sin(math.pi * b / HEIGHT) \
+    inward = WALL_SAG * (1 - (a / HALF) ** 2) * math.sin(math.pi * b / HEIGHT) \
         + 0.01 * math.sin(7 * a + rng_phase[0]) * math.sin(5 * b / HEIGHT + rng_phase[1])
     if face == "n":
         return np.array([a, HALF - inward, b])
@@ -35,19 +39,35 @@ def side_point(face, a, b, rng_phase):
     return np.array([-HALF + inward, a, b])
 
 
+def inward_dir(face):
+    return {"n": np.array([0, -1.0, 0]), "s": np.array([0, 1.0, 0]), "e": np.array([-1.0, 0, 0]),
+            "w": np.array([1.0, 0, 0]), "top": np.array([0, 0, -1.0])}[face]
+
+
 def build():
     rng = np.random.default_rng(3)
     verts, quads, normals = [], [], []
 
-    def strip(points, normal_hint):
+    def normal_knot(face, c, u):
+        """the knot square lies in the net: its width runs across u, in the net's surface"""
+        n = np.array([0, 0, 1.0]) if face == "top" else np.cross(u, [0, 0, 1.0])
+        return n / np.linalg.norm(n)
+
+    def loose_rope(points, normal_hint):
+        """thicker rope: two crossed ribbons, so it shows from any side"""
+        strip(points, normal_hint, width=STRAND * 1.6)
+        strip(points, np.array([0, 0, 1.0]), width=STRAND * 1.6)
+
+    def strip(points, normal_hint, width=None):
         """A flat ribbon of width STRAND along the polyline, both sides."""
+        width = STRAND if width is None else width
         for p, q in zip(points[:-1], points[1:]):
             d = q - p
             side = np.cross(d, normal_hint)
             n = np.linalg.norm(side)
             if n < 1e-9:
                 continue
-            side = side / n * STRAND / 2
+            side = side / n * width / 2
             nrm = np.cross(side, d)
             nrm /= np.linalg.norm(nrm)
             i = len(verts)
@@ -76,6 +96,23 @@ def build():
             pts = [side_point(face, a0 + jitter + 0.006 * math.sin(2 * b + ph[1]), b, ph)
                    for b in np.linspace(b_min, b_max, SEGMENTS)]
             strip(np.array(pts), normal)
+        # knots: a small square at every crossing
+        for a0 in np.arange(-HALF + CELL / 2, HALF, CELL):
+            for b0 in np.arange(b_min + CELL / 2, b_max, CELL):
+                c = side_point(face, a0, b0, ph)
+                u = side_point(face, a0 + 0.001, b0, ph) - c
+                u = u / np.linalg.norm(u) * KNOT / 2
+                strip(np.array([c - u, c + u]), normal_knot(face, c, u))
+        if face != "top":
+            # a loose rope hanging across the side, as in the photos (up to 45 cm of slack)
+            ends = (HEIGHT * rng.uniform(0.62, 0.75), HEIGHT * rng.uniform(0.62, 0.75))
+            slack = rng.uniform(0.25, 0.45)
+            pts = []
+            for a in np.linspace(-HALF, HALF, SEGMENTS * 2):
+                t = (a + HALF) / (2 * HALF)
+                z = ends[0] + (ends[1] - ends[0]) * t - slack * math.sin(math.pi * t)
+                pts.append(side_point(face, a, z, ph) + inward_dir(face) * 0.015)
+            loose_rope(np.array(pts), normal)
     # extra net lying on the floor along each side (25 cm wide)
     for face in ("n", "s", "e", "w"):
         inward = {"n": (0, -1, 0), "s": (0, 1, 0), "e": (-1, 0, 0), "w": (1, 0, 0)}[face]

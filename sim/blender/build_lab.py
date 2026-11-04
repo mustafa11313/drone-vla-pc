@@ -6,7 +6,7 @@ build_lab.py  -  the lab around the flight cage as a real 3D scene in Blender.
 
 Builds everything from simple shapes, placed from the lab video:
 
-    cage       2 x 2 m, 3 m high, black posts and top frame, black rope net (sagging, with
+    cage       2 x 2 m, 2 m high, silver aluminium posts and top frame, black rope net (sagging, with
                the extra net lying on the floor), black worn puzzle mats inside, the pad
     room       light grey floor with red/white tape, white walls, windows, ceiling ducts,
                pipes and strip lights
@@ -29,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 TEX = os.path.join(HERE, "tex")
 SIM_TEX = os.path.join(HERE, "..", "textures")
 
-CAGE_HALF, CAGE_H = 1.0, 3.0
+CAGE_HALF, CAGE_H = 1.0, 2.0
 ROOM = dict(xmin=-8.0, xmax=6.0, ymin=-7.0, ymax=2.3, h=4.8)
 
 # ---------------------------------------------------------------- textures (numpy)
@@ -307,17 +307,18 @@ def build_cage(M, pad_xy=(0.0, 0.0), pad_yaw=0.0):
     mats = plane("cage_mats", (2 * h, 2 * h), (0, 0, 0.004), mat_image("mats", path, scale=size, rough=0.85))
     pad = plane("pad", (0.5, 0.5), (pad_xy[0], pad_xy[1], 0.009), mat_uv_image("pad", os.path.join(SIM_TEX, "pad.png"), gain=0.25),
                 rot=(0, 0, pad_yaw))
-    # posts and top frame (black square tube)
-    t = 0.04
+    # posts and top frame: silver aluminium profile with black corner connectors (lab photos)
+    t = 0.045
     for sx in (-1, 1):
         for sy in (-1, 1):
-            box(f"post_{sx}{sy}", (t, t, CAGE_H), (sx * h, sy * h, 0), M["black_metal"])
+            box(f"post_{sx}{sy}", (t, t, CAGE_H), (sx * h, sy * h, 0), M["alu_profile"])
+            box(f"top_corner_{sx}{sy}", (0.09, 0.09, 0.07), (sx * (h - 0.01), sy * (h - 0.01), CAGE_H - 0.075), M["black_plastic"])
+            box(f"post_foot_{sx}{sy}", (0.08, 0.08, 0.012), (sx * h, sy * h, 0), M["black_plastic"])
     for s in (-1, 1):
-        box(f"top_x_{s}", (2 * h, t, t), (0, s * h, CAGE_H - t), M["black_metal"])
-        box(f"top_y_{s}", (t, 2 * h, t), (s * h, 0, CAGE_H - t), M["black_metal"])
-        box(f"mid_x_{s}", (2 * h, 0.025, 0.025), (0, s * h, 2.1), M["black_metal"])   # the horizontal rope/bar
+        box(f"top_x_{s}", (2 * h, t, t), (0, s * h, CAGE_H - t), M["alu_profile"])
+        box(f"top_y_{s}", (t, 2 * h, t), (s * h, 0, CAGE_H - t), M["alu_profile"])
     # net: subdivided planes with a rope-mesh alpha texture, sagging inwards a little
-    netp = make_net_texture()
+    netp = make_net_texture(cells=10, strand=0.035)
     net_m = mat_image("net", netp, scale=1.0, alpha=True, rough=0.9)
     sides = [("n", (0, h, CAGE_H / 2), (90, 0, 0)), ("s", (0, -h, CAGE_H / 2), (90, 0, 0)),
              ("e", (h, 0, CAGE_H / 2), (90, 0, 90)), ("w", (-h, 0, CAGE_H / 2), (90, 0, 90))]
@@ -332,12 +333,14 @@ def build_cage(M, pad_xy=(0.0, 0.0), pad_yaw=0.0):
             p = v.co
             a = (p.x if abs(rot[2]) < 1 else p.y) / h          # -1..1 along the side
             z = p.z / CAGE_H
-            sag = 0.07 * (1 - a * a) * math.sin(math.pi * z) + 0.015 * math.sin(7 * a + ph[0]) * math.sin(5 * z + ph[1])
+            sag = 0.06 * (1 - a * a) * math.sin(math.pi * z) + 0.015 * math.sin(7 * a + ph[0]) * math.sin(5 * z + ph[1])
             v.co = p + inward * sag
         # extra net lying on the floor along the side
         skirt = grid(f"net_skirt_{nm}", 2 * h, 0.25, 12, 3,
                      (loc[0] * 0.88, loc[1] * 0.88, 0.012), (0, 0, rot[2]), net_m)
-    grid("net_top", 2 * h, 2 * h, 24, 24, (0, 0, CAGE_H), (0, 0, 0), net_m)
+    top = grid("net_top", 2 * h, 2 * h, 24, 24, (0, 0, CAGE_H), (0, 0, 0), net_m)
+    for v in top.data.vertices:      # the roof hangs down in the middle
+        v.co.z -= 0.15 * (1 - (v.co.x / h) ** 2) * (1 - (v.co.y / h) ** 2)
     for o in bpy.data.objects:
         if o.name.startswith("net"):
             o.visible_shadow = False          # the real net leaves no visible shadow pattern
@@ -464,7 +467,8 @@ def materials():
         tape_red=c("tape_red", (0.7, 0.05, 0.05), 0.5), tape_white=c("tape_white", (0.9, 0.9, 0.9), 0.5),
         duct=c("duct", (0.75, 0.75, 0.74), 0.5, 0.3), pipe=c("pipe", (0.8, 0.8, 0.8), 0.4, 0.5),
         lamp=c("lamp", (1, 1, 0.97), 0.5, 0, emit=8.0), metal=c("metal", (0.6, 0.6, 0.62), 0.35, 0.8),
-        black_metal=c("black_metal", (0.02, 0.02, 0.02), 0.5, 0.3), alu=c("alu", (0.65, 0.66, 0.68), 0.4, 0.7),
+        black_metal=c("black_metal", (0.02, 0.02, 0.02), 0.5, 0.3),
+        alu_profile=c("alu_profile", (0.72, 0.73, 0.75), 0.35, 0.8), alu=c("alu", (0.65, 0.66, 0.68), 0.4, 0.7),
         alu_top=c("alu_top", (0.75, 0.75, 0.76), 0.4, 0.6), beige_machine=c("beige_machine", (0.75, 0.68, 0.5), 0.6),
         grey_box=c("grey_box", (0.35, 0.36, 0.38), 0.6), white_box=c("white_box", (0.85, 0.85, 0.83), 0.5),
         yellow=c("yellow", (0.85, 0.65, 0.02), 0.4), cabinet=c("cabinet", (0.68, 0.69, 0.68), 0.5),
@@ -588,7 +592,7 @@ FACES = {   # name: (forward, up); right = forward x up
 PROBE_GRID = dict(x=(-0.7, 0.0, 0.7), y=(-0.7, 0.0, 0.7), z=(0.4, 1.2, 2.0, 2.8))
 if os.environ.get("PROBE_TEST"):
     PROBE_GRID = dict(x=(0.0,), y=(0.0,), z=(1.2,))
-HIDE_FOR_PROBES = ("net", "post_", "top_", "mid_", "pad")
+HIDE_FOR_PROBES = ("net", "post_", "top_", "pad")
 
 
 def _face_camera(pos, face, res):
@@ -716,6 +720,17 @@ def export_obj(out_dir):
     bpy.ops.wm.obj_export(filepath=os.path.join(out_dir, "lab.obj"), export_selected_objects=True,
                           forward_axis="Y", up_axis="Z", export_materials=True, path_mode="COPY",
                           export_uv=True, export_normals=True, apply_modifiers=True)
+    # Gazebo does not read texture options like "-s 0.25 0.25 1" (the tiling is in the UVs already)
+    mtl = os.path.join(out_dir, "lab.mtl")
+    import re
+    text = re.sub(r"^(map_\w+)\s+(?:-\w+(?:\s+[-\d.]+)+\s+)+", r"\1 ", open(mtl).read(), flags=re.M)
+    # newer Blender leaves out "Kd" for textured materials; Gazebo then draws them black
+    blocks = text.split("newmtl ")
+    for i, b in enumerate(blocks):
+        if "map_Kd" in b and "\nKd " not in b:
+            name, rest = b.split("\n", 1)
+            blocks[i] = f"{name}\nKd 1.000000 1.000000 1.000000\n{rest}"
+    open(mtl, "w").write("newmtl ".join(blocks))
     print("obj ->", out_dir)
 
 

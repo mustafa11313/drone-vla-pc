@@ -21,11 +21,11 @@
         <pose>0 0 -0.05 0 0 0</pose>
         <geometry><box><size>20 20 0.1</size></box></geometry>
       </collision>
-      <collision name="net_n"><pose>0 1.0 1.5 0 0 0</pose><geometry><box><size>2 0.01 3</size></box></geometry></collision>
-      <collision name="net_s"><pose>0 -1.0 1.5 0 0 0</pose><geometry><box><size>2 0.01 3</size></box></geometry></collision>
-      <collision name="net_e"><pose>1.0 0 1.5 0 0 0</pose><geometry><box><size>0.01 2 3</size></box></geometry></collision>
-      <collision name="net_w"><pose>-1.0 0 1.5 0 0 0</pose><geometry><box><size>0.01 2 3</size></box></geometry></collision>
-      <collision name="net_top"><pose>0 0 3.0 0 0 0</pose><geometry><box><size>2 2 0.01</size></box></geometry></collision>
+      <collision name="net_n"><pose>0 1.0 1.0 0 0 0</pose><geometry><box><size>2 0.01 2</size></box></geometry></collision>
+      <collision name="net_s"><pose>0 -1.0 1.0 0 0 0</pose><geometry><box><size>2 0.01 2</size></box></geometry></collision>
+      <collision name="net_e"><pose>1.0 0 1.0 0 0 0</pose><geometry><box><size>0.01 2 2</size></box></geometry></collision>
+      <collision name="net_w"><pose>-1.0 0 1.0 0 0 0</pose><geometry><box><size>0.01 2 2</size></box></geometry></collision>
+      <collision name="net_top"><pose>0 0 1.9 0 0 0</pose><geometry><box><size>2 2 0.01</size></box></geometry></collision>
     </link>
   </model>
 </sdf>

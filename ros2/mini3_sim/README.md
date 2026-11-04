@@ -1,6 +1,6 @@
 # mini3_sim: the flight cage in Gazebo (ROS 2 Humble)
 
-Your DJI Mini 3 in the lab's 2 x 2 x 3 m net cage, in Gazebo Fortress with ROS 2 Humble, on
+Your DJI Mini 3 in the lab's 2 x 2 x 2 m net cage, in Gazebo Fortress with ROS 2 Humble, on
 Ubuntu 22.04. Runs on a laptop without an NVIDIA GPU.
 
 **Steps 1 to 4 (this version):** the lab, the cage with its net, the pad and the drone in Gazebo;

@@ -31,7 +31,8 @@ from mini3_sim.dynamics import Mini3, Params
 
 TAKEOFF_HEIGHT = 1.2     # m, DJI auto takeoff
 LAND_HEIGHT = 0.6        # m, below this with throttle down the drone lands by itself
-CAGE_HALF, CAGE_TOP = 1.0, 3.0
+CAGE_HALF, CAGE_TOP = 1.0, 2.0
+ROOF_SAG = 0.15         # m, the roof net hangs down in the middle (tools/make_net.py)
 DRONE_RADIUS = 0.13      # m, centre to propeller tips
 FLOOR = 0.03             # m, height of the drone's centre when it stands on the floor
 
@@ -129,7 +130,7 @@ class DroneNode(Node):
     def keep_off_net(self):
         s = self.model.s
         gaps = {"x": net_wall(s.y, s.z) - abs(s.x), "y": net_wall(s.x, s.z) - abs(s.y),
-                "z": CAGE_TOP - 0.06 * (1 - s.x ** 2) * (1 - s.y ** 2) - s.z}
+                "z": CAGE_TOP - ROOF_SAG * (1 - s.x ** 2) * (1 - s.y ** 2) - s.z}
         gap = min(gaps.values())
         if gap < DRONE_RADIUS + 0.005 and not self.touching_net:      # props touch the net
             self.touching_net = True
