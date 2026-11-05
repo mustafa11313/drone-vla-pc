@@ -406,54 +406,113 @@ def cobot(M, name, base, z0, yaw=0.0):
         cyl(f"{name}_j{i}", 0.06, 0.12, tuple(p), M["cobot_joint"], rot=(90, 0, yaw))
 
 
+def quadruped(M, name, x, y, yaw=0.0):
+    """the robot dog lying on the grey mats beside the cage (photos 1 and 2): body and folded legs"""
+    c, s_ = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
+    box(f"{name}_body", (0.75, 0.25, 0.14), (x, y, 0.02), M["white_robot"], rot_z=yaw)
+    for i, (lx, ly) in enumerate(((0.3, 0.2), (0.3, -0.2), (-0.3, 0.2), (-0.3, -0.2))):
+        px, py = x + c * lx - s_ * ly, y + s_ * lx + c * ly
+        q = Vector((px + c * 0.35, py + s_ * 0.35, 0.05))
+        rod(f"{name}_leg{i}", Vector((px, py, 0.05)), q, 0.04, M["black_plastic"])
+        sphere(f"{name}_foot{i}", 0.045, q, M["orange"])
+
+
+def humanoid(M, name, x, y, yaw=0.0):
+    """black humanoid robot hanging on its wheeled stand (photos 8 and 9)"""
+    box(f"{name}_stand_foot", (0.7, 0.6, 0.08), (x, y, 0.04), M["black_plastic"], rot_z=yaw)
+    cyl(f"{name}_stand_pole", 0.04, 1.6, (x, y - 0.2, 0.85), M["black_metal"])
+    box(f"{name}_torso", (0.38, 0.25, 0.55), (x, y, 1.0), M["dark_grey"], rot_z=yaw)
+    sphere(f"{name}_head", 0.12, Vector((x, y, 1.7)), M["dark_grey"])
+    for sx in (-1, 1):
+        rod(f"{name}_arm{sx}", Vector((x + sx * 0.24, y, 1.48)), Vector((x + sx * 0.28, y + 0.05, 0.95)), 0.05, M["dark_grey"])
+        rod(f"{name}_leg{sx}", Vector((x + sx * 0.1, y, 1.0)), Vector((x + sx * 0.12, y, 0.25)), 0.06, M["dark_grey"])
+
+
+def euro_boxes(M, name, x, y, n):
+    for i in range(n):
+        box(f"{name}_{i}", (0.6, 0.4, 0.31), (x, y, 0.33 * i), M["euro_grey"])
+
+
 def build_surroundings(M):
+    """Everything around the cage, placed from the 9 lab photos (Nov 2026). North is the side with
+    the corridor to the wall; west the robot area (ABB, UR table); south the desks."""
     h = CAGE_HALF
-    # north, behind the cage: bench along the wall with machines, the small yellow robot, cabinet
-    by = ROOM["ymax"] - 0.45
-    box("bench_n", (2.4, 0.7, 0.85), (0.1, by, 0), M["alu"])
-    box("bench_n_top", (2.4, 0.7, 0.03), (0.1, by, 0.85), M["alu_top"])
-    box("machine_1", (0.55, 0.45, 0.45), (-0.5, by, 0.88), M["beige_machine"])
-    box("machine_2", (0.4, 0.4, 0.55), (0.2, by, 0.88), M["grey_box"])
-    box("machine_3", (0.5, 0.45, 0.35), (0.8, by, 0.88), M["white_box"])
-    box("frame_rack", (0.5, 0.5, 1.6), (-0.1, by + 0.05, 0.88), M["alu"])
-    arm_robot(M, "yellow_robot", (-1.45, 1.55), M["yellow"], scale=0.75, yaw=-60, pose=(20, -10, 70))
-    box("yellow_robot_stand", (0.6, 0.6, 0.08), (-1.45, 1.55, 0), M["alu"])
-    box("cabinet_grey", (1.0, 0.55, 2.0), (1.75, ROOM["ymax"] - 0.3, 0), M["cabinet"])
-    box("cabinet_line", (0.01, 0.56, 1.95), (1.75, ROOM["ymax"] - 0.3, 0.02), M["black_plastic"])
-    # east of the cage: small table, cardboard box with a monitor on it, pc tower
-    box("table_e", (0.7, 0.7, 0.72), (1.55, 0.55, 0), M["white_frame"])
-    box("carton_e", (0.5, 0.4, 0.35), (1.55, 0.55, 0.72), M["cardboard"])
-    monitor(M, "mon_e", 1.55, 0.6, 1.07, rot=90)
-    # south, where you stand: long desk along the net, laptop, controller, second desk
+    W = ROOM["ymax"]                      # north wall
+    # ---- north corridor (photos 2, 3, 4): grey cabinet with magnets and two screens on top,
+    #      the Fanuc on its aluminium frame, its controller, grey control boxes, the lab sign
+    cx, cw = -1.05, 1.0
+    box("cabinet_grey", (cw, 0.55, 2.0), (cx, W - 0.3, 0), M["cabinet"])
+    box("cabinet_line", (0.01, 0.56, 1.95), (cx, W - 0.3, 0.02), M["black_plastic"])
+    box("cabinet_handle", (0.06, 0.03, 0.12), (cx + 0.15, W - 0.585, 0.95), M["black_plastic"])
+    for i, (dx, dz, col) in enumerate(((-0.35, 1.55, "magnet_red"), (-0.22, 1.55, "magnet_red"),
+                                       (-0.28, 1.45, "magnet_blue"), (0.2, 1.6, "magnet_red"),
+                                       (0.3, 1.58, "magnet_blue"), (0.32, 1.35, "magnet_red"))):
+        cyl(f"magnet_{i}", 0.025, 0.01, (cx + dx, W - 0.58, dz), M[col], rot=(90, 0, 0), verts=12)
+    for i, (dx, w_) in enumerate(((-0.25, 0.5), (0.2, 0.62))):     # screens in aluminium frames
+        box(f"cab_screen_frame_{i}", (w_ + 0.05, 0.3, 0.5), (cx + dx, W - 0.32 + 0.05 * i, 2.0), M["alu"])
+        box(f"cab_screen_{i}", (w_, 0.02, 0.44), (cx + dx, W - 0.48 + 0.05 * i, 2.03), M["black_plastic"])
+    box("lab_sign", (0.9, 0.01, 0.16), (cx + 1.05, W - 0.01, 2.15), M["glass"])
+    # Fanuc: yellow arm on a floor frame of aluminium profiles, reaching towards the cage
+    for i, (dx, dy, lx, ly) in enumerate(((0, 0, 0.9, 0.06), (0, 0.35, 0.9, 0.06), (0, -0.35, 0.9, 0.06),
+                                         (0.42, 0, 0.06, 0.8), (-0.42, 0, 0.06, 0.8))):
+        box(f"fanuc_frame_{i}", (lx, ly, 0.08), (0.05 + dx, W - 0.55 + dy, 0), M["alu"])
+    box("fanuc_plate", (0.35, 0.35, 0.1), (0.05, W - 0.55, 0.08), M["black_metal"])
+    arm_robot(M, "yellow_robot", (0.05, W - 0.55), M["yellow"], scale=0.7, yaw=-120, pose=(15, 10, 50))
+    box("fanuc_controller", (0.6, 0.55, 0.85), (0.75, W - 0.4, 0), M["beige_machine"])
+    box("fanuc_controller_top", (0.6, 0.55, 0.05), (0.75, W - 0.4, 0.85), M["black_plastic"])
+    box("teach_pendant_n", (0.25, 0.08, 0.3), (0.75, W - 0.5, 0.9), M["pendant"], rot_z=10)
+    box("control_grey_1", (0.5, 0.5, 1.1), (1.4, W - 0.35, 0), M["grey_box"])
+    box("control_white", (0.6, 0.5, 0.75), (2.0, W - 0.35, 0), M["white_box"])
+    box("duct_down", (0.7, 0.3, 2.6), (2.6, W - 0.15, 2.0), M["duct"])
+    # ---- west (photos 1, 2, 7): grey mats with the robot dog along the cage, the big white ABB
+    #      on its wooden pallet with the blue-wrapped crate beside it, the UR cobot table
+    box("mats_out_w", (1.0, 2.4, 0.012), (-1.6, -0.1, 0), M["mat_grey"])
+    quadruped(M, "robot_dog", -1.6, -0.5, yaw=80)
+    box("abb_pallet", (1.3, 1.2, 0.14), (-3.1, 0.4, 0), M["wood"])
+    arm_robot(M, "white_robot", (-3.1, 0.4), M["white_robot"], scale=2.1, yaw=10, pose=(-15, 20, 70))
+    box("abb_controller", (0.7, 0.6, 1.3), (-3.9, 1.6, 0), M["grey_box"])
+    box("abb_controller_screen", (0.3, 0.02, 0.22), (-3.9, 1.29, 0.95), M["laptop_screen"])
+    box("crate_base", (1.2, 2.0, 0.12), (-3.1, -1.3, 0), M["black_plastic"])
+    box("crate_wrap", (1.2, 2.0, 0.4), (-3.1, -1.3, 0.12), M["blue_wrap"])
+    box("mobile_base", (0.7, 0.5, 0.3), (-3.0, -2.9, 0), M["dark_grey"])
+    box("cobot_table", (1.0, 0.7, 0.85), (-2.4, 1.35, 0), M["alu"])
+    box("cobot_table_glass", (1.0, 0.7, 0.02), (-2.4, 1.35, 0.85), M["glass"])
+    cobot(M, "cobot", (-2.65, 1.35), 0.87, yaw=-30)
+    box("green_print", (0.12, 0.08, 0.06), (-2.2, 1.2, 0.87), M["green"])
+    box("spindle_stand", (0.25, 0.25, 1.0), (-1.75, W - 0.35, 0), M["alu"])
+    box("spindle", (0.18, 0.18, 0.4), (-1.75, W - 0.45, 1.0), M["black_plastic"])
+    tube_curve("orange_cable", [(-1.75, W - 0.45, 1.4), (-1.6, W - 0.5, 1.2), (-1.55, W - 0.4, 0.4), (-1.6, W - 0.3, 0.02)], 0.012, M["orange"])
+    euro_boxes(M, "euro_a", -2.95, W - 0.25, 3)
+    euro_boxes(M, "euro_b", -2.3, W - 0.25, 3)
+    box("airtech_box_1", (0.4, 0.4, 0.5), (-1.65, 1.35, 0), M["cardboard"])
+    box("airtech_box_2", (0.4, 0.4, 0.45), (-1.65, 1.35, 0.5), M["cardboard"])
+    # ---- east (photo 5): cardboard box with a black tray, wooden board, table with monitor
+    box("carton_e", (0.7, 0.5, 0.35), (1.6, 0.3, 0), M["cardboard"])
+    box("tray_e", (0.5, 0.35, 0.12), (1.6, 0.3, 0.35), M["black_plastic"])
+    box("board_e", (0.3, 0.04, 1.4), (2.0, 0.9, 0), M["wood"], rot_z=10)
+    box("table_e", (0.8, 0.7, 0.72), (2.4, -0.3, 0), M["white_frame"])
+    monitor(M, "mon_e", 2.4, -0.3, 0.72, rot=90)
+    # ---- south (photos 6, 9): desks with blue drawers and PCs right outside the cage, the humanoid
+    #      robots on their stands and the crane further away
     desk(M, "desk_s", -0.1, -h - 0.55, 2.2, 0.8)
-    box("laptop_base", (0.34, 0.24, 0.02), (0.2, -h - 0.55, 0.9), M["laptop"])
-    box("laptop_screen", (0.34, 0.01, 0.23), (0.2, -h - 0.43, 0.92), M["laptop_screen"])
-    box("rc", (0.15, 0.1, 0.04), (-0.4, -h - 0.5, 0.9), M["dark_grey"])
-    box("drone_case", (0.35, 0.25, 0.03), (-0.75, -h - 0.45, 0.9), M["dark_grey"])
-    cyl("bottle", 0.035, 0.25, (0.55, -h - 0.4, 1.025), M["metal"])
-    desk(M, "desk_se", 1.55, -h - 0.15, 0.8, 1.7, drawers=False)
-    monitor(M, "mon_se", 1.75, -0.6, 0.9, rot=100)
-    box("teach_pendant", (0.25, 0.08, 0.35), (1.35, -h - 0.25, 0.9), M["pendant"], rot_z=-30)
+    box("pc_s1", (0.22, 0.48, 0.48), (0.55, -h - 0.55, 0.9), M["black_plastic"])
+    monitor(M, "mon_s1", 0.1, -h - 0.7, 0.9, rot=180)
+    box("keyboard_s1", (0.45, 0.15, 0.02), (0.1, -h - 0.45, 0.9), M["black_plastic"])
+    box("black_box_s", (0.6, 0.35, 0.25), (-0.8, -h - 0.5, 0.9), M["dark_grey"])
+    desk(M, "desk_se", 1.55, -h - 0.15, 0.8, 1.7, drawers=True)
+    monitor(M, "mon_se", 1.6, -0.6, 0.9, rot=100)
+    box("pc_se", (0.22, 0.48, 0.48), (1.6, -1.5, 0.9), M["black_plastic"])
     box("chair_s", (0.5, 0.5, 0.5), (0.3, -h - 1.4, 0), M["black_plastic"])
     box("chair_s_back", (0.45, 0.08, 0.55), (0.3, -h - 1.62, 0.5), M["black_plastic"])
-    # west: fume extractor near the cage, then the robot area
-    box("fume_box", (0.6, 0.5, 0.95), (-2.0, -0.7, 0.05), M["white_box"])
-    box("fume_front", (0.02, 0.5, 0.5), (-1.69, -0.7, 0.45), M["blue"])
-    tube_curve("fume_hose", [(-2.0, -0.6, 1.0), (-2.1, -0.4, 1.9), (-1.9, 0.0, 2.5), (-1.6, 0.2, 2.1), (-1.5, 0.3, 1.5)], 0.07, M["black_plastic"])
-    box("fume_box_2", (0.6, 0.5, 0.95), (-3.0, 1.6, 0.05), M["white_box"])
-    tube_curve("fume_hose_2", [(-3.0, 1.6, 1.0), (-3.1, 1.4, 2.0), (-2.9, 1.1, 2.6), (-2.6, 0.9, 2.0)], 0.07, M["black_plastic"])
-    arm_robot(M, "green_robot", (-3.4, 0.2), M["green"], scale=1.0, yaw=-20, pose=(25, -30, 60))
-    box("controller_box", (0.6, 0.55, 0.75), (-2.7, -0.1, 0), M["controller"])
-    box("pallet", (1.2, 1.0, 0.15), (-4.8, 0.9, 0), M["wood"])
-    box("pallet_wrap", (1.2, 1.0, 0.35), (-4.8, 0.9, 0.15), M["blue_wrap"])
-    arm_robot(M, "white_robot", (-4.8, 1.0), M["white_robot"], scale=1.35, yaw=-30, pose=(10, -20, 40))
-    box("cobot_table", (1.2, 0.8, 0.85), (-3.3, 1.75, 0), M["alu"])
-    cobot(M, "cobot", (-3.4, 1.75), 0.87, yaw=-120)
-    # further south-west: workbenches with monitors, chairs, the black flight cases
+    humanoid(M, "humanoid_1", -0.6, -3.6)
+    humanoid(M, "humanoid_2", -2.0, -4.6)
+    box("crane_foot", (1.0, 0.8, 0.08), (1.4, -4.8, 0), M["black_metal"])
+    box("crane_post", (0.1, 0.1, 2.3), (1.4, -4.8, 0.08), M["black_metal"])
+    rod("crane_boom", Vector((1.4, -4.8, 2.3)), Vector((1.4, -3.9, 2.0)), 0.05, M["black_metal"])
     for i, x in enumerate((-4.5, -2.7)):
-        desk(M, f"desk_w{i}", x, -2.6, 1.6, 0.75)
-        monitor(M, f"mon_w{i}", x, -2.5, 0.9)
-    box("cases", (0.8, 0.5, 0.9), (2.0, -3.0, 0), M["black_plastic"])
+        desk(M, f"desk_w{i}", x, -3.6, 1.6, 0.75)
+        monitor(M, f"mon_w{i}", x, -3.5, 0.9)
+    box("cases", (0.8, 0.5, 0.9), (2.6, -3.0, 0), M["black_plastic"])
     desk(M, "desk_e", 3.8, -0.5, 1.6, 0.75, rot=90)
     box("orange_bench", (2.4, 0.7, 0.85), (4.2, -3.5, 0), M["orange"])
 
@@ -477,9 +536,11 @@ def materials():
         laptop=c("laptop", (0.6, 0.6, 0.62), 0.4, 0.5), laptop_screen=c("laptop_screen", (0.7, 0.8, 0.95), 0.3, 0, emit=1.5),
         dark_grey=c("dark_grey", (0.15, 0.15, 0.15), 0.5), pendant=c("pendant", (0.3, 0.32, 0.35), 0.5),
         green=c("green", (0.3, 0.85, 0.05), 0.4), controller=c("controller", (0.08, 0.08, 0.08), 0.5),
-        blue_wrap=c("blue_wrap", (0.15, 0.4, 0.75), 0.3), white_robot=c("white_robot", (0.88, 0.88, 0.86), 0.4),
+        blue_wrap=c("blue_wrap", (0.08, 0.2, 0.5), 0.3), white_robot=c("white_robot", (0.88, 0.88, 0.86), 0.4),
         cobot=c("cobot", (0.8, 0.82, 0.85), 0.4), cobot_joint=c("cobot_joint", (0.35, 0.45, 0.55), 0.4),
         orange=c("orange", (0.9, 0.35, 0.05), 0.5),
+        magnet_red=c("magnet_red", (0.75, 0.05, 0.05), 0.4), magnet_blue=c("magnet_blue", (0.05, 0.15, 0.6), 0.4),
+        euro_grey=c("euro_grey", (0.5, 0.52, 0.54), 0.6), mat_grey=c("mat_grey", (0.12, 0.12, 0.13), 0.8),
     )
 
 
