@@ -81,6 +81,15 @@ pixels: handy to try the tools above without a GPU.
 
 Every MODEL FLY press is now a numbered flight (`flight` in `steps.csv` and in every event).
 
+## 7. Brain + hands in a simulated cage
+
+Claude (or a rule-based pilot) picks a skill every 1-2 s; skills (rotate, climb, move, vla,
+servo, land) fly at 10 Hz through the governor. Try it without the drone:
+
+    python3 -m sim.run --pilot scripted --policy seek --missions 20 --servo-target-y 0.75
+
+See `sim/README.md`.
+
 ## Safety layers
 
 | Layer | Where | What |

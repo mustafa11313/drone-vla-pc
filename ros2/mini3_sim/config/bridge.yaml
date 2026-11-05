@@ -1,0 +1,26 @@
+# Gazebo <-> ROS 2 topics (ros_gz_bridge)
+- ros_topic_name: /drone/camera/raw          # camera_exposure turns this into /drone/camera/image_raw
+  gz_topic_name: /drone/camera
+  ros_type_name: sensor_msgs/msg/Image
+  gz_type_name: ignition.msgs.Image
+  direction: GZ_TO_ROS
+- ros_topic_name: /drone/camera/camera_info
+  gz_topic_name: /drone/camera_info
+  ros_type_name: sensor_msgs/msg/CameraInfo
+  gz_type_name: ignition.msgs.CameraInfo
+  direction: GZ_TO_ROS
+- ros_topic_name: /drone/odometry
+  gz_topic_name: /model/mini3/odometry
+  ros_type_name: nav_msgs/msg/Odometry
+  gz_type_name: ignition.msgs.Odometry
+  direction: GZ_TO_ROS
+- ros_topic_name: /drone/cmd_vel
+  gz_topic_name: /model/mini3/cmd_vel
+  ros_type_name: geometry_msgs/msg/Twist
+  gz_type_name: ignition.msgs.Twist
+  direction: ROS_TO_GZ
+- ros_topic_name: /clock
+  gz_topic_name: /clock
+  ros_type_name: rosgraph_msgs/msg/Clock
+  gz_type_name: ignition.msgs.Clock
+  direction: GZ_TO_ROS

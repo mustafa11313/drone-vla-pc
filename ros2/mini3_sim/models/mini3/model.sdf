@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<!-- DJI Mini 3 sized drone. Its x axis points forward. It is moved by mini3_sim's drone node
+     (Mini 3 motion fitted from real flights) through the VelocityControl plugin, so it has no
+     gravity and stays level; the camera is fixed 50 deg down, like the stabilised gimbal. -->
+<sdf version="1.9">
+  <model name="mini3">
+    <link name="body">
+      <gravity>false</gravity>
+      <inertial><mass>0.249</mass>
+        <inertia><ixx>0.0006</ixx><iyy>0.0006</iyy><izz>0.001</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+      </inertial>
+      <collision name="body">
+        <geometry><cylinder><radius>0.11</radius><length>0.06</length></cylinder></geometry>
+      </collision>
+      <visual name="body">
+        <geometry><box><size>0.15 0.09 0.055</size></box></geometry>
+        <material><diffuse>0.55 0.56 0.58 1</diffuse><specular>0.3 0.3 0.3 1</specular></material>
+      </visual>
+      <visual name="arm_fl"><pose>0.06 0.07 0.0 0 0 0.6</pose><geometry><box><size>0.11 0.018 0.012</size></box></geometry>
+        <material><diffuse>0.5 0.5 0.52 1</diffuse></material></visual>
+      <visual name="arm_fr"><pose>0.06 -0.07 0.0 0 0 -0.6</pose><geometry><box><size>0.11 0.018 0.012</size></box></geometry>
+        <material><diffuse>0.5 0.5 0.52 1</diffuse></material></visual>
+      <visual name="arm_bl"><pose>-0.06 0.07 0.0 0 0 -0.6</pose><geometry><box><size>0.11 0.018 0.012</size></box></geometry>
+        <material><diffuse>0.5 0.5 0.52 1</diffuse></material></visual>
+      <visual name="arm_br"><pose>-0.06 -0.07 0.0 0 0 0.6</pose><geometry><box><size>0.11 0.018 0.012</size></box></geometry>
+        <material><diffuse>0.5 0.5 0.52 1</diffuse></material></visual>
+      <visual name="prop_fl"><pose>0.105 0.105 0.015 0 0 0</pose><geometry><cylinder><radius>0.06</radius><length>0.003</length></cylinder></geometry>
+        <material><diffuse>0.15 0.15 0.15 0.6</diffuse></material></visual>
+      <visual name="prop_fr"><pose>0.105 -0.105 0.015 0 0 0</pose><geometry><cylinder><radius>0.06</radius><length>0.003</length></cylinder></geometry>
+        <material><diffuse>0.15 0.15 0.15 0.6</diffuse></material></visual>
+      <visual name="prop_bl"><pose>-0.105 0.105 0.015 0 0 0</pose><geometry><cylinder><radius>0.06</radius><length>0.003</length></cylinder></geometry>
+        <material><diffuse>0.15 0.15 0.15 0.6</diffuse></material></visual>
+      <visual name="prop_br"><pose>-0.105 -0.105 0.015 0 0 0</pose><geometry><cylinder><radius>0.06</radius><length>0.003</length></cylinder></geometry>
+        <material><diffuse>0.15 0.15 0.15 0.6</diffuse></material></visual>
+      <visual name="gimbal"><pose>0.085 0 -0.012 0 0.87 0</pose><geometry><box><size>0.025 0.03 0.025</size></box></geometry>
+        <material><diffuse>0.1 0.1 0.1 1</diffuse></material></visual>
+      <sensor name="camera" type="camera">
+        <pose>0.1 0 -0.015 0 0.8727 0</pose>   <!-- 50 deg down -->
+        <always_on>true</always_on>
+        <update_rate>15</update_rate>
+        <topic>drone/camera</topic>
+        <camera>
+          <horizontal_fov>1.0821</horizontal_fov>   <!-- 62 deg, estimated from real frames -->
+          <image><width>640</width><height>360</height><format>R8G8B8</format></image>
+          <clip><near>0.02</near><far>40</far></clip>
+          <noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise>
+        </camera>
+      </sensor>
+    </link>
+    <plugin filename="ignition-gazebo-velocity-control-system" name="ignition::gazebo::systems::VelocityControl">
+      <topic>/model/mini3/cmd_vel</topic>
+    </plugin>
+    <plugin filename="ignition-gazebo-odometry-publisher-system" name="ignition::gazebo::systems::OdometryPublisher">
+      <odom_frame>world</odom_frame>
+      <robot_base_frame>mini3</robot_base_frame>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <dimensions>3</dimensions>
+      <odom_topic>/model/mini3/odometry</odom_topic>
+    </plugin>
+  </model>
+</sdf>
