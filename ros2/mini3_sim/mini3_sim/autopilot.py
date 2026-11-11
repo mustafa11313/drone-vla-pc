@@ -35,6 +35,8 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
 
+from mini3_sim.scenarios import NEAR_Y, YAW_X, in_picture, pad_angles
+
 PAD_HALF = 0.25          # m, the pad is 50 x 50 cm
 TIMEOUT_S = 60.0         # a flight that takes longer is landed and marked fail
 MAX_TRIES = 3            # the same setup is flown at most this many times, then skipped
@@ -190,6 +192,107 @@ class Pilot:
         self.push0 = list(self.target)
 
 
+class ScenarioPilot(Pilot):
+    """The stick logic for the yaw and roll scenarios (setups:=scenarios, see scenarios.py).
+
+    Every decision is taken from where the pad is in the camera picture, so the model can learn it:
+        not in the picture   -> clockwise turn until it shows up
+        far, well to a side  -> yaw towards it (strong, 45-100 %, as in the real flights)
+        near, well to a side -> roll towards it, heading kept (steady 12-40 %)
+        about centred        -> pitch forward, with roll for a small sideways offset
+    Yaw and roll are never pushed at the same time. Before that, the throttle brings the drone to
+    the scenario's hover height (0.8-1.4 m)."""
+
+    def __init__(self, rng, scenario):
+        super().__init__(rng, search=True)
+        self.sc = scenario
+        self.height = float(scenario.get("height", 1.0))
+        self.yaw_stop = float(scenario.get("yaw_stop", 3.0))
+        self.yaw_gain = rng.uniform(2.5, 4.0)          # yaw % per degree off-centre
+        self.yaw_min = rng.uniform(45, 60)
+        self.yaw_max = rng.uniform(80, 100)
+        self.turn_push = rng.uniform(60, 90)
+        self.max_push = rng.uniform(32, 42)            # roll and pitch: as in the real flights
+        self.min_push = rng.uniform(12, 18)
+        self.combine_p = 1.0
+        self.seen = False
+        self.phase = "height"
+        self.climb = rng.uniform(40, 65)
+        self.prev_z = None
+
+    def step(self, t, dt, fwd, right, v_fwd, v_right, z, visible=True, clear=True):
+        a = pad_angles(fwd, right, z)
+        vis = in_picture(a, -2.0)
+        self.seen = self.seen or vis
+        dist = math.hypot(fwd, right)
+        speed = math.hypot(v_fwd, v_right)
+        if self.phase == "height":
+            err = self.height - z
+            vz = (z - self.prev_z) / dt if self.prev_z is not None else 0.0
+            self.prev_z = z
+            # let go early: the drone keeps moving up or down for ~0.75 s after the stick is centred
+            if abs(err) < 0.04 or (err * vz > 0 and abs(err) < abs(vz) * 0.6):
+                self.target = [0, 0, 0, 0]
+                self.phase, self.until = "pause", t + self.rng.uniform(0.3, 0.8)
+            else:
+                self.target = [0, 0, math.copysign(self.climb, err) * min(1.0, abs(err) / 0.15 + 0.4), 0]
+        elif self.phase == "turn":
+            # clearly in: well in from the side it comes in from, anywhere up-down
+            if a and abs(a[0]) < HFOV / 2 - 6 and abs(a[1]) < VFOV / 2 + 2 and self.seen_at is None:
+                self.seen_at = t
+            if self.seen_at is None and t - self.turn_start > 30.0:
+                self.seen_at = t - self.react
+            if self.seen_at is not None and t - self.seen_at >= self.react:
+                self.target = [0, 0, 0, 0]
+                self.phase, self.until = "pause", t + self.rng.uniform(0.3, 0.8)
+        elif self.phase == "face":
+            x = a[0] if a else None
+            if x is None or abs(x) < self.yaw_stop or x * self.target[3] < 0 or t >= self.until:
+                self.target = [0, 0, 0, 0]
+                self.phase, self.until = "pause", t + self.rng.uniform(0.3, 0.8)
+            else:
+                push = min(self.yaw_max, max(self.yaw_min, abs(x) * self.yaw_gain))
+                # let go a little early: the turn goes on for ~0.25 s after the stick is centred
+                if abs(x) < self.yaw_stop + 6:
+                    push = self.yaw_min * 0.8
+                self.target = [0, 0, 0, math.copysign(push, x)]
+        elif self.phase == "pause":
+            self.target = [0, 0, 0, 0]
+            centred = max(abs(v) for v in self.sticks) < 0.5        # never yaw and roll at once
+            if t >= self.until and centred and speed < self.rng.uniform(0.08, 0.2):
+                if dist < self.precision:
+                    self.phase, self.landing = "land", True
+                elif not vis and not (self.seen and dist < 0.7):
+                    self.target = [0, 0, 0, self.turn_push * self.rng.uniform(0.95, 1.05)]
+                    self.phase, self.seen_at, self.turn_start = "turn", None, t
+                elif vis and abs(a[0]) >= YAW_X and a[1] < NEAR_Y:
+                    self.phase, self.until = "face", t + 6.0
+                elif vis and abs(a[0]) >= YAW_X:
+                    self.target = [0, self.push(right), 0, 0]        # near and to the side: roll only
+                    self.push0 = list(self.target)
+                    self.phase, self.until = "push", t + 3.5
+                else:
+                    # centred, or just slid out of the bottom of the picture (it is right below)
+                    self.target = [self.push(fwd) if abs(fwd) > 0.04 else 0, 0, 0, 0]
+                    if abs(right) > 0.08:
+                        self.target[1] = self.push(right)
+                    if not any(self.target):
+                        self.phase, self.landing = "land", True
+                    else:
+                        self.push0 = list(self.target)
+                        self.phase, self.until = "push", t + 3.5
+            return self.finish(dt)
+        elif self.phase == "push":
+            return super().step(t, dt, fwd, right, v_fwd, v_right, z, visible, clear)
+        if self.phase == "land":
+            self.target = [0, 0, -100, 0]
+        return self.finish(dt)
+
+    def push(self, err):
+        p = min(self.max_push, max(self.min_push, self.gain * abs(err)))
+        return math.copysign(p * self.rng.uniform(0.9, 1.1), err)
+
+
 class Autopilot(Node):
     def __init__(self):
         super().__init__("autopilot")
@@ -281,7 +384,10 @@ class Autopilot(Node):
         elif self.state == "rec_wait":
             self.send_sticks([0, 0, 0, 0])
             if st["recording"]:
-                self.pilot = Pilot(self.rng, search=bool(st.get("search")))
+                if st.get("scenario"):
+                    self.pilot = ScenarioPilot(self.rng, st["scenario"])
+                else:
+                    self.pilot = Pilot(self.rng, search=bool(st.get("search")))
                 self.go("fly")
             elif age > 5:
                 self.rec_pub.publish(String(data="start"))
@@ -309,6 +415,12 @@ class Autopilot(Node):
                 self.done += 1
                 self.ok_count += ok
                 self.tries = 0 if ok else self.tries + 1
+                if not ok and self.tries >= MAX_TRIES and st.get("scenario"):
+                    self.get_logger().warn("the same setup failed 3 times; going on with the next one")
+                    self.tries = 0
+                    self.rec_pub.publish(String(data="fail_skip"))
+                    self.go("wait_setup")
+                    return
                 if not ok and self.tries >= MAX_TRIES:
                     # give up on this setup: mark it success-less but move on is not possible
                     # through the recorder (fail repeats the setup), so stop here and say so

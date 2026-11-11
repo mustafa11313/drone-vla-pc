@@ -28,7 +28,7 @@ def generate_launch_description():
                               description="folder for recorded episodes"),
         DeclareLaunchArgument("plan_size", default_value="216", description="number of setups in the plan"),
         DeclareLaunchArgument("setups", default_value="plan",
-                              description="plan: the app's grid plan, nose to the pad; random: search episodes"),
+                              description="plan: the app's grid plan, nose to the pad; random: search episodes; scenarios: the yaw and roll set (plan_size:=660)"),
         DeclareLaunchArgument("autopilot", default_value="false",
                               description="fly and record the plan's episodes automatically (no keyboard)"),
         DeclareLaunchArgument("autopilot_episodes", default_value="216", description="how many episodes to fly"),

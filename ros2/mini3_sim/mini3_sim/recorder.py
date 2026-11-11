@@ -52,6 +52,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 
+from mini3_sim.scenarios import make_scenario
+
 HEADER = ("time_ms,latitude,longitude,height_above_takeoff,x_speed,y_speed,z_speed,"
           "heading,drone_pitch,drone_roll,pitch_cmd,roll_cmd,throttle_cmd,yaw_cmd,"
           "gimbal_heading,gimbal_pitch,gimbal_roll,flight_mode")
@@ -115,11 +117,13 @@ class Recorder(Node):
         self.declare_parameter("place_on_start", True)
         # "plan": the app's 3 x 3 grid plan, nose to the pad. "random": any positions and heading,
         # the pad often out of view at the start (the drone has to turn to find it).
+        # "scenarios": the yaw and roll scenario set (mini3_sim/scenarios.py), use plan_size:=660.
         self.declare_parameter("setups", "plan")
         # more than 216, e.g. to record replacements for deleted search episodes (setups 217, 218...)
         self.declare_parameter("plan_size", PLAN_SIZE)
         self.plan_size = int(self.get_parameter("plan_size").value)
-        self.random_mode = self.get_parameter("setups").value == "random"
+        self.scenario_mode = self.get_parameter("setups").value == "scenarios"
+        self.random_mode = self.get_parameter("setups").value == "random" or self.scenario_mode
         self.out_dir = self.get_parameter("out_dir").value
         os.makedirs(self.out_dir, exist_ok=True)
         self.plan = make_plan()
@@ -148,6 +152,7 @@ class Recorder(Node):
         self.create_subscription(String, "/drone/event", self.on_event, 10)
         self.create_subscription(String, "/drone/record", self.on_command, 10)
         self.status_pub = self.create_publisher(String, "/drone/recorder/status", 10)
+        self.look_pub = self.create_publisher(String, "/drone/camera/look", 10)
         self.tick_timer = None
         self.create_timer(0.5, self.publish_status)
         self.create_timer(0.1, self.housekeeping)
@@ -166,12 +171,19 @@ class Recorder(Node):
     def current(self):
         if self.next_index >= self.plan_size or (not self.random_mode and self.next_index >= PLAN_SIZE):
             return None
+        if self.scenario_mode:
+            return make_scenario(self.next_index)
         return make_random(self.next_index) if self.random_mode else self.plan[self.next_index]
 
     def describe(self):
         s = self.current()
         if s is None:
             return f"plan finished: all {self.plan_size} episodes done"
+        if self.scenario_mode:
+            (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
+            return (f"episode {s['number']}/{self.plan_size} ({s['scenario']}, pad {s['pad_side']}): drone at "
+                    f"({dx:.2f}, {dy:.2f}) facing {s['heading']:.0f} deg, pad at ({px:.2f}, {py:.2f}), "
+                    f"height {s['height']:.2f} m")
         if self.random_mode:
             (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
             return (f"episode {s['number']}/{self.plan_size} (search): drone at ({dx:.2f}, {dy:.2f}) facing "
@@ -208,12 +220,14 @@ class Recorder(Node):
         # Gazebo sometimes loses the reply to a request ("Host unreachable"), so try a few times.
         # Setting the same pose again does no harm.
         for attempt in range(6):
-            ok = self.set_pose("pad", px, py, 0.0, 0.0) and self.set_pose("mini3", dx, dy, 0.05, yaw)
+            pad_yaw = np.radians(s.get("pad_yaw", 0.0))
+            ok = self.set_pose("pad", px, py, 0.0, pad_yaw) and self.set_pose("mini3", dx, dy, 0.05, yaw)
             if ok:
                 break
             self.get_logger().warn(f"moving the models failed (try {attempt + 1}), trying again")
             time.sleep(1.0 + attempt)
         if ok:
+            self.look_pub.publish(String(data=json.dumps(s.get("look", {}))))
             self.pad_xy = (px, py)
             self.placed_seq += 1
         self.message = ("placed: " if ok else "could not move the models: ") + self.describe()
@@ -266,6 +280,8 @@ class Recorder(Node):
             self.stop_at = self.now()          # rows up to now are still written, then it stops
         elif c in ("success", "fail"):
             self.finish(c == "success")
+        elif c == "fail_skip":                 # fail, and go on with the next setup (autopilot)
+            self.finish(False, skip=True)
         elif c == "place":
             self.place()
 
@@ -304,7 +320,14 @@ class Recorder(Node):
     def write_setup(self, stamp):
         s = self.current()
         d = {"started": stamp}
-        if s is not None and self.random_mode:
+        if s is not None and self.scenario_mode:
+            (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
+            d.update({"plan_number": s["number"], "repeat": 1, "scenario": s["scenario"],
+                      "pad_side": s["pad_side"], "mirror": s["mirror"], "hover_height_m": s["height"],
+                      "drone_xy": [round(dx, 3), round(dy, 3)], "pad_xy": [round(px, 3), round(py, 3)],
+                      "pad_east_m": round(px - dx, 3), "pad_north_m": round(py - dy, 3),
+                      "pad_yaw_deg": s["pad_yaw"], "camera_look": s["look"]})
+        elif s is not None and self.random_mode:
             (dx, dy), (px, py) = s["drone_xy"], s["pad_xy"]
             d.update({"plan_number": s["number"], "repeat": 1, "search": True,
                       "drone_xy": [round(dx, 3), round(dy, 3)], "pad_xy": [round(px, 3), round(py, 3)],
@@ -434,7 +457,7 @@ class Recorder(Node):
             f"{os.path.basename(d)} | {summary}\n")
         return summary
 
-    def finish(self, ok):
+    def finish(self, ok, skip=False):
         if self.recording:
             self.message = "still recording: land first (or R to stop)"
             return
@@ -444,7 +467,7 @@ class Recorder(Node):
         no = os.path.basename(self.last_dir).split("_")[1]
         open(os.path.join(self.last_dir, f"{no}_result.txt"), "w").write("success\n" if ok else "fail\n")
         self.last_dir = None
-        if ok:
+        if ok or skip:
             self.next_index += 1
             self.save_progress()
         self.message = f"episode {no} marked {'success' if ok else 'fail'}"
@@ -462,7 +485,9 @@ class Recorder(Node):
             "placed_seq": self.placed_seq,
             "pad_xy": self.pad_xy,
             "plan_done": self.current() is None,
-            "search": self.random_mode,
+            "search": self.random_mode and not self.scenario_mode,
+            "scenario": ({k: cur[k] for k in ("scenario", "pad_side", "height", "yaw_stop")}
+                         if self.scenario_mode and (cur := self.current()) else None),
         })))
 
 
