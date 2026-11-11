@@ -412,16 +412,25 @@ def cobot(M, name, base, z0, yaw=0.0):
         cyl(f"{name}_j{i}", 0.06, 0.12, tuple(p), M["cobot_joint"], rot=(90, 0, yaw))
 
 
-def quadruped(M, name, x, y, yaw=0.0):
-    """a robot dog standing next to the net (video: five of them in a row): body and four legs"""
-    c, s_ = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-    box(f"{name}_body", (0.6, 0.24, 0.16), (x, y, 0.32), M["dark_grey"], rot_z=yaw)
-    box(f"{name}_back", (0.3, 0.2, 0.04), (x, y, 0.48), M["blue_wrap"], rot_z=yaw)
-    for i, (lx, ly) in enumerate(((0.24, 0.14), (0.24, -0.14), (-0.24, 0.14), (-0.24, -0.14))):
-        px, py = x + c * lx - s_ * ly, y + s_ * lx + c * ly
-        knee = Vector((px - c * 0.06, py - s_ * 0.06, 0.18))
-        rod(f"{name}_thigh{i}", Vector((px, py, 0.34)), knee, 0.035, M["black_plastic"])
-        rod(f"{name}_shin{i}", knee, Vector((px + c * 0.03, py + s_ * 0.03, 0.02)), 0.025, M["black_plastic"])
+def booster_k1(M, name, x, y):
+    """a Booster K1 (small humanoid, about 0.95 m tall) sitting on the floor with its legs
+    stretched out towards the cage, as the five in the video"""
+    box(f"{name}_hips", (0.16, 0.24, 0.12), (x, y, 0.0), M["dark_grey"])
+    box(f"{name}_torso", (0.16, 0.26, 0.3), (x - 0.02, y, 0.12), M["dark_grey"])
+    box(f"{name}_chest", (0.03, 0.18, 0.14), (x + 0.07, y, 0.26), M["metal"])
+    cyl(f"{name}_neck", 0.03, 0.06, (x - 0.02, y, 0.45), M["black_plastic"])
+    sphere(f"{name}_head", 0.075, Vector((x - 0.02, y, 0.53)), M["black_plastic"])
+    for sy in (-1, 1):
+        hip = Vector((x + 0.05, y + sy * 0.07, 0.06))
+        knee = Vector((x + 0.27, y + sy * 0.08, 0.07))
+        foot = Vector((x + 0.47, y + sy * 0.08, 0.06))
+        rod(f"{name}_thigh{sy}", hip, knee, 0.05, M["black_plastic"])
+        rod(f"{name}_shin{sy}", knee, foot, 0.04, M["black_plastic"])
+        box(f"{name}_foot{sy}", (0.04, 0.07, 0.12), (foot.x + 0.02, foot.y, 0.0), M["black_plastic"])
+        sh = Vector((x - 0.02, y + sy * 0.16, 0.39))
+        el = Vector((x + 0.0, y + sy * 0.18, 0.24))
+        rod(f"{name}_upperarm{sy}", sh, el, 0.035, M["dark_grey"])
+        rod(f"{name}_forearm{sy}", el, Vector((x + 0.08, y + sy * 0.17, 0.12)), 0.03, M["black_plastic"])
 
 
 def humanoid(M, name, x, y, yaw=0.0):
@@ -473,11 +482,11 @@ def build_surroundings(M):
     box("control_white", (0.5, 0.5, 0.75), (1.2, W - 0.35, 0), M["white_box"])
     box("control_white_top", (0.5, 0.5, 0.25), (1.2, W - 0.35, 0.75), M["grey_box"])
     box("duct_down", (0.6, 0.3, 2.4), (1.1, W - 0.15, 2.2), M["duct"])
-    # ---- west (photos 1, 2, 7): grey mats with the robot dog along the cage, the big white ABB
+    # ---- west (photos 1, 2, 7): grey mats with five Booster K1 sitting along the cage, the big white ABB
     #      on its wooden pallet with the blue-wrapped crate beside it, the UR cobot table
     box("mats_out_w", (1.0, 2.4, 0.012), (-1.6, -0.1, 0), M["mat_grey"])
-    for i, yy in enumerate(np.linspace(-0.85, 0.85, 5)):     # the robot dogs lined up along the net
-        quadruped(M, f"robot_dog{i}", -1.5, float(yy), yaw=0)
+    for i, yy in enumerate(np.linspace(-0.8, 0.8, 5)):      # five Booster K1 sitting in a row by the net
+        booster_k1(M, f"booster_k1_{i}", -1.6, float(yy))
     box("abb_pallet", (1.3, 1.2, 0.14), (-3.1, 0.4, 0), M["wood"])
     arm_robot(M, "white_robot", (-3.1, 0.4), M["white_robot"], scale=2.1, yaw=10, pose=(-15, 20, 70))
     box("abb_controller", (0.7, 0.6, 1.3), (-3.9, 1.6, 0), M["grey_box"])

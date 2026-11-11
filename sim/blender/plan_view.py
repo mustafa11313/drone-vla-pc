@@ -19,7 +19,7 @@ GROUPS = [  # prefix, label, colour
  ("abb_controller", "ABB controller", (110,110,110)), ("crate", "blue wrapped crate", (40,70,140)),
  ("mobile_base", "mobile robot base", (70,70,70)), ("cobot_table", "UR cobot table", (180,180,190)), ("cobot_", None, (220,225,235)),
  ("spindle", "spindle", (30,30,30)), ("euro", "grey euro boxes", (130,135,140)),
- ("airtech", "Airtech boxes", (170,125,80)), ("mats_out", "grey mats", (60,60,60)), ("robot_dog", "robot dog", (230,230,230)),
+ ("airtech", "Airtech boxes", (170,125,80)), ("mats_out", "grey mats", (60,60,60)), ("booster_k1", "Booster K1", (60,60,60)),
  ("carton_e", "carton + black tray", (170,125,80)), ("board_e", "wooden board", (190,140,80)),
  ("table_e", "table + monitor", (220,220,220)), ("desk_s2", "desk row", (200,160,110)), ("desk_s", "desk, PCs, monitors", (200,160,110)),
  ("desk_se", "desk, PC, monitor", (200,160,110)), ("humanoid", "humanoid on stand", (60,60,60)),
