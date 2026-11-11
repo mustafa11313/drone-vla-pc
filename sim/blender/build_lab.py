@@ -484,9 +484,9 @@ def build_surroundings(M):
     box("duct_down", (0.6, 0.3, 2.4), (1.1, W - 0.15, 2.2), M["duct"])
     # ---- west (photos 1, 2, 7): grey mats with five Booster K1 sitting along the cage, the big white ABB
     #      on its wooden pallet with the blue-wrapped crate beside it, the UR cobot table
-    box("mats_out_w", (1.0, 2.4, 0.012), (-1.6, -0.1, 0), M["mat_grey"])
+    box("mats_out_w", (1.3, 2.4, 0.012), (-1.75, -0.1, 0), M["mat_grey"])
     for i, yy in enumerate(np.linspace(-0.8, 0.8, 5)):      # five Booster K1 sitting in a row by the net
-        booster_k1(M, f"booster_k1_{i}", -1.6, float(yy))
+        booster_k1(M, f"booster_k1_{i}", -2.0, float(yy))     # feet about 0.5 m from the net
     box("abb_pallet", (1.3, 1.2, 0.14), (-3.1, 0.4, 0), M["wood"])
     arm_robot(M, "white_robot", (-3.1, 0.4), M["white_robot"], scale=2.1, yaw=10, pose=(-15, 20, 70))
     box("abb_controller", (0.7, 0.6, 1.3), (-3.9, 1.6, 0), M["grey_box"])
