@@ -21,13 +21,13 @@ GROUPS = [  # prefix, label, colour
  ("spindle", "spindle", (30,30,30)), ("euro", "grey euro boxes", (130,135,140)),
  ("airtech", "Airtech boxes", (170,125,80)), ("mats_out", "grey mats", (60,60,60)), ("robot_dog", "robot dog", (230,230,230)),
  ("carton_e", "carton + black tray", (170,125,80)), ("board_e", "wooden board", (190,140,80)),
- ("table_e", "table + monitor", (220,220,220)), ("desk_s", "desk, PC, monitor", (200,160,110)),
+ ("table_e", "table + monitor", (220,220,220)), ("desk_s2", "desk row", (200,160,110)), ("desk_s", "desk, PCs, monitors", (200,160,110)),
  ("desk_se", "desk, PC, monitor", (200,160,110)), ("humanoid", "humanoid on stand", (60,60,60)),
  ("crane", "crane", (30,30,30)), ("desk_w", "desk", (200,160,110)), ("desk_e", "desk", (200,160,110)),
  ("cases", "black cases", (30,30,30)), ("orange_bench", "orange bench", (230,110,30)), ("chair", None, (40,40,40)),
  ("cage_mats", "CAGE 2 x 2 m", (25,25,25)),
 ]
-X0, X1, Y0, Y1, PX = -5.5, 3.5, -5.5, 2.5, 110
+X0, X1, Y0, Y1, PX = -5.5, 2.0, -5.5, 2.5, 110
 img = Image.new("RGB", (int((X1-X0)*PX), int((Y1-Y0)*PX)), (245,245,242))
 d = ImageDraw.Draw(img)
 def P(x, y): return ((x-X0)*PX, (Y1-y)*PX)
@@ -40,6 +40,7 @@ for gx in range(int(X0), int(X1)+1):
 for gy in range(int(Y0), int(Y1)+1):
     d.line([P(X0, gy), P(X1, gy)], fill=(225,225,225))
 d.rectangle([P(X0, 2.5), P(X1, 2.3)], fill=(160,160,160)); d.text(P(-0.6, 2.49), "north wall", fill="black", font=f)
+d.rectangle([P(B.ROOM["xmax"], 2.5), P(X1, Y0)], fill=(160,160,160))
 labels = {}
 for o in bpy.data.objects:
     if o.type != "MESH": continue

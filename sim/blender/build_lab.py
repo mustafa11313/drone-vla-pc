@@ -30,7 +30,7 @@ TEX = os.path.join(HERE, "tex")
 SIM_TEX = os.path.join(HERE, "..", "textures")
 
 CAGE_HALF, CAGE_H = 1.0, 2.0
-ROOM = dict(xmin=-8.0, xmax=6.0, ymin=-7.0, ymax=2.3, h=4.8)
+ROOM = dict(xmin=-8.0, xmax=1.5, ymin=-7.0, ymax=2.3, h=4.8)   # east wall ~0.5 m behind the net (video)
 
 # ---------------------------------------------------------------- textures (numpy)
 
@@ -60,34 +60,41 @@ def make_net_texture(px=1024, cells=19, strand=0.055, seed=0):
 
 
 def make_mat_texture(px_per_m=400, tile=0.6, n=4, seed=1):
-    """Black EVA puzzle mats (n x n tiles of `tile` m), worn lighter where people walk."""
+    """Mid-grey puzzle mats (n x n tiles of `tile` m) as in the Nov 2026 lab video, a little worn."""
     from PIL import Image, ImageFilter
     rng = np.random.default_rng(seed)
     N = int(n * tile * px_per_m)
     y, x = np.mgrid[0:N, 0:N] / px_per_m
-    base = np.full((N, N), 0.10, np.float32)
+    base = np.full((N, N), 0.50, np.float32)
     # fine foam grain
-    base += rng.normal(0, 0.012, (N, N)).astype(np.float32)
+    base += rng.normal(0, 0.02, (N, N)).astype(np.float32)
     # wear: big soft lighter patches
     w = Image.fromarray((rng.random((6, 6)) * 255).astype(np.uint8)).resize((N, N), Image.BICUBIC)
     w = np.asarray(w.filter(ImageFilter.GaussianBlur(N / 20)), np.float32) / 255
-    base *= 0.75 + 0.7 * w
+    base *= 0.9 + 0.2 * w
     # scuffs
     for _ in range(140):
         cx, cy, L, ang = rng.uniform(0, N), rng.uniform(0, N), rng.uniform(10, 80), rng.uniform(0, math.pi)
         t = np.linspace(-L / 2, L / 2, int(L))
         xs = (cx + t * math.cos(ang)).astype(int) % N
         ys = (cy + t * math.sin(ang)).astype(int) % N
-        base[ys, xs] += 0.04
-    # puzzle seams with teeth
+        base[ys, xs] -= 0.05
+    # puzzle tiles: each pixel belongs to a tile, whose edges carry square teeth (as in the real
+    # mats: ~10 cm period, ~3 cm deep). The seam is drawn where the tile changes, so the zig-zag
+    # outline is continuous, and every tile gets its own slightly different tone.
     u, v = x / tile, y / tile
-    tooth = 0.06 * np.sign(np.sin(v * math.pi * 8))
-    seam_x = np.abs((u + tooth) - np.round(u + tooth)) * tile < 0.004
-    tooth = 0.06 * np.sign(np.sin(u * math.pi * 8))
-    seam_y = np.abs((v + tooth) - np.round(v + tooth)) * tile < 0.004
-    base[seam_x | seam_y] *= 0.45
+    tooth_u = 0.05 * np.sign(np.sin(v * math.pi * 12 + 0.3))
+    tooth_v = 0.05 * np.sign(np.sin(u * math.pi * 12 + 0.3))
+    iu = np.floor(u + tooth_u).astype(int) % n
+    iv = np.floor(v + tooth_v).astype(int) % n
+    tid = iu * n + iv
+    tone = rng.uniform(0.9, 1.08, n * n).astype(np.float32)
+    base *= tone[tid]
+    edge = (tid != np.roll(tid, 1, 0)) | (tid != np.roll(tid, 1, 1))
+    edge |= np.roll(edge, 1, 0) | np.roll(edge, 1, 1)                  # 2 px wide gap
+    base[edge] *= 0.72
     g = np.clip(base, 0, 1)
-    rgb = (np.stack([g, g * 0.98, g * 0.96], -1) * 255).astype(np.uint8)
+    rgb = (np.stack([g, g * 0.93, g * 0.93], -1) * 255).astype(np.uint8)    # slightly warm grey
     return _save("mats.png", rgb), n * tile
 
 
@@ -276,13 +283,12 @@ def build_room(M):
     for i, x in enumerate((-6.5, -5.0, -3.5)):
         box(f"window_{i}", (1.3, 0.05, 1.0), (x, r["ymax"] - 0.03, 1.3), M["glass"])
         box(f"window_frame_{i}", (1.4, 0.04, 1.1), (x, r["ymax"] - 0.01, 1.25), M["white_frame"])
-    box("door_n", (1.0, 0.05, 2.1), (3.6, r["ymax"] - 0.03, 0), M["door_grey"])
     box("big_window_s", (4.0, 0.05, 3.6), (-2.0, r["ymin"] + 0.03, 0.4), M["glass_dark"])
     # columns
-    for x in (-2.0, 2.4):
+    for x in (-2.0,):
         box(f"column_{x}", (0.35, 0.35, r["h"]), (x, r["ymax"] - 0.18, 0), M["wall"])
     # red / white tape lines on the floor
-    for (x0, y0, x1, y1) in ((-1.9, -0.2, -1.9, -4.0), (-4.8, -0.9, -2.1, -0.9), (2.9, -2.2, 2.9, 1.8)):
+    for (x0, y0, x1, y1) in ((-1.9, -0.2, -1.9, -4.0), (-4.8, -0.9, -2.1, -0.9)):
         L = math.hypot(x1 - x0, y1 - y0)
         n = int(L / 0.1)
         ang = math.degrees(math.atan2(y1 - y0, x1 - x0))
@@ -407,14 +413,15 @@ def cobot(M, name, base, z0, yaw=0.0):
 
 
 def quadruped(M, name, x, y, yaw=0.0):
-    """the robot dog lying on the grey mats beside the cage (photos 1 and 2): body and folded legs"""
+    """a robot dog standing next to the net (video: five of them in a row): body and four legs"""
     c, s_ = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
-    box(f"{name}_body", (0.75, 0.25, 0.14), (x, y, 0.02), M["white_robot"], rot_z=yaw)
-    for i, (lx, ly) in enumerate(((0.3, 0.2), (0.3, -0.2), (-0.3, 0.2), (-0.3, -0.2))):
+    box(f"{name}_body", (0.6, 0.24, 0.16), (x, y, 0.32), M["dark_grey"], rot_z=yaw)
+    box(f"{name}_back", (0.3, 0.2, 0.04), (x, y, 0.48), M["blue_wrap"], rot_z=yaw)
+    for i, (lx, ly) in enumerate(((0.24, 0.14), (0.24, -0.14), (-0.24, 0.14), (-0.24, -0.14))):
         px, py = x + c * lx - s_ * ly, y + s_ * lx + c * ly
-        q = Vector((px + c * 0.35, py + s_ * 0.35, 0.05))
-        rod(f"{name}_leg{i}", Vector((px, py, 0.05)), q, 0.04, M["black_plastic"])
-        sphere(f"{name}_foot{i}", 0.045, q, M["orange"])
+        knee = Vector((px - c * 0.06, py - s_ * 0.06, 0.18))
+        rod(f"{name}_thigh{i}", Vector((px, py, 0.34)), knee, 0.035, M["black_plastic"])
+        rod(f"{name}_shin{i}", knee, Vector((px + c * 0.03, py + s_ * 0.03, 0.02)), 0.025, M["black_plastic"])
 
 
 def humanoid(M, name, x, y, yaw=0.0):
@@ -458,16 +465,19 @@ def build_surroundings(M):
         box(f"fanuc_frame_{i}", (lx, ly, 0.08), (0.05 + dx, W - 0.55 + dy, 0), M["alu"])
     box("fanuc_plate", (0.35, 0.35, 0.1), (0.05, W - 0.55, 0.08), M["black_metal"])
     arm_robot(M, "yellow_robot", (0.05, W - 0.55), M["yellow"], scale=0.7, yaw=-120, pose=(15, 10, 50))
-    box("fanuc_controller", (0.6, 0.55, 0.85), (0.75, W - 0.4, 0), M["beige_machine"])
-    box("fanuc_controller_top", (0.6, 0.55, 0.05), (0.75, W - 0.4, 0.85), M["black_plastic"])
-    box("teach_pendant_n", (0.25, 0.08, 0.3), (0.75, W - 0.5, 0.9), M["pendant"], rot_z=10)
-    box("control_grey_1", (0.5, 0.5, 1.1), (1.4, W - 0.35, 0), M["grey_box"])
-    box("control_white", (0.6, 0.5, 0.75), (2.0, W - 0.35, 0), M["white_box"])
-    box("duct_down", (0.7, 0.3, 2.6), (2.6, W - 0.15, 2.0), M["duct"])
+    box("fanuc_controller", (0.55, 0.55, 0.85), (0.6, W - 0.4, 0), M["beige_machine"])
+    box("fanuc_controller_label", (0.4, 0.01, 0.3), (0.6, W - 0.68, 0.45), M["yellow"])
+    box("fanuc_controller_top", (0.55, 0.55, 0.05), (0.6, W - 0.4, 0.85), M["black_plastic"])
+    tube_curve("fanuc_cables", [(0.45, W - 0.4, 0.9), (0.6, W - 0.5, 0.97), (0.75, W - 0.35, 0.92)], 0.03, M["tape_red"])
+    box("teach_pendant_n", (0.25, 0.08, 0.3), (0.7, W - 0.5, 0.9), M["pendant"], rot_z=10)
+    box("control_white", (0.5, 0.5, 0.75), (1.2, W - 0.35, 0), M["white_box"])
+    box("control_white_top", (0.5, 0.5, 0.25), (1.2, W - 0.35, 0.75), M["grey_box"])
+    box("duct_down", (0.6, 0.3, 2.4), (1.1, W - 0.15, 2.2), M["duct"])
     # ---- west (photos 1, 2, 7): grey mats with the robot dog along the cage, the big white ABB
     #      on its wooden pallet with the blue-wrapped crate beside it, the UR cobot table
     box("mats_out_w", (1.0, 2.4, 0.012), (-1.6, -0.1, 0), M["mat_grey"])
-    quadruped(M, "robot_dog", -1.6, -0.5, yaw=80)
+    for i, yy in enumerate(np.linspace(-0.85, 0.85, 5)):     # the robot dogs lined up along the net
+        quadruped(M, f"robot_dog{i}", -1.5, float(yy), yaw=0)
     box("abb_pallet", (1.3, 1.2, 0.14), (-3.1, 0.4, 0), M["wood"])
     arm_robot(M, "white_robot", (-3.1, 0.4), M["white_robot"], scale=2.1, yaw=10, pose=(-15, 20, 70))
     box("abb_controller", (0.7, 0.6, 1.3), (-3.9, 1.6, 0), M["grey_box"])
@@ -486,35 +496,43 @@ def build_surroundings(M):
     euro_boxes(M, "euro_b", -2.3, W - 0.25, 3)
     box("airtech_box_1", (0.4, 0.4, 0.5), (-1.65, 1.35, 0), M["cardboard"])
     box("airtech_box_2", (0.4, 0.4, 0.45), (-1.65, 1.35, 0.5), M["cardboard"])
-    # ---- east (photo 5): cardboard box with a black tray, wooden board, table with monitor
-    box("carton_e", (0.7, 0.5, 0.35), (1.6, 0.3, 0), M["cardboard"])
-    box("tray_e", (0.5, 0.35, 0.12), (1.6, 0.3, 0.35), M["black_plastic"])
-    box("board_e", (0.3, 0.04, 1.4), (2.0, 0.9, 0), M["wood"], rot_z=10)
-    box("table_e", (0.8, 0.7, 0.72), (2.4, -0.3, 0), M["white_frame"])
-    monitor(M, "mon_e", 2.4, -0.3, 0.72, rot=90)
-    # ---- south (photos 6, 9): desks with blue drawers and PCs right outside the cage, the humanoid
-    #      robots on their stands and the crane further away
-    desk(M, "desk_s", -0.1, -h - 0.55, 2.2, 0.8)
-    box("pc_s1", (0.22, 0.48, 0.48), (0.55, -h - 0.55, 0.9), M["black_plastic"])
-    monitor(M, "mon_s1", 0.1, -h - 0.7, 0.9, rot=180)
-    box("keyboard_s1", (0.45, 0.15, 0.02), (0.1, -h - 0.45, 0.9), M["black_plastic"])
-    box("black_box_s", (0.6, 0.35, 0.25), (-0.8, -h - 0.5, 0.9), M["dark_grey"])
-    desk(M, "desk_se", 1.55, -h - 0.15, 0.8, 1.7, drawers=True)
-    monitor(M, "mon_se", 1.6, -0.6, 0.9, rot=100)
-    box("pc_se", (0.22, 0.48, 0.48), (1.6, -1.5, 0.9), M["black_plastic"])
-    box("chair_s", (0.5, 0.5, 0.5), (0.3, -h - 1.4, 0), M["black_plastic"])
-    box("chair_s_back", (0.45, 0.08, 0.55), (0.3, -h - 1.62, 0.5), M["black_plastic"])
-    humanoid(M, "humanoid_1", -0.6, -3.6)
-    humanoid(M, "humanoid_2", -2.0, -4.6)
-    box("crane_foot", (1.0, 0.8, 0.08), (1.4, -4.8, 0), M["black_metal"])
-    box("crane_post", (0.1, 0.1, 2.3), (1.4, -4.8, 0.08), M["black_metal"])
-    rod("crane_boom", Vector((1.4, -4.8, 2.3)), Vector((1.4, -3.9, 2.0)), 0.05, M["black_metal"])
-    for i, x in enumerate((-4.5, -2.7)):
-        desk(M, f"desk_w{i}", x, -3.6, 1.6, 0.75)
-        monitor(M, f"mon_w{i}", x, -3.5, 0.9)
-    box("cases", (0.8, 0.5, 0.9), (2.6, -3.0, 0), M["black_plastic"])
-    desk(M, "desk_e", 3.8, -0.5, 1.6, 0.75, rot=90)
-    box("orange_bench", (2.4, 0.7, 0.85), (4.2, -3.5, 0), M["orange"])
+    # ---- east (video): the wall is about 0.5 m behind the net. A cardboard box on the floor, a
+    #      wooden board leaning on the wall, the green eyewash station, a black box up on a shelf
+    box("carton_e", (0.4, 0.6, 0.35), (1.25, 0.05, 0), M["cardboard"])
+    box("board_e", (0.06, 0.28, 1.35), (1.42, 0.5, 0), M["wood"])
+    cyl("eyewash_pipe", 0.02, 0.5, (1.46, 0.3, 1.45), M["pipe"])
+    for i, dz in enumerate((1.25, 1.55)):
+        sphere(f"eyewash_{i}", 0.05, Vector((1.43, 0.3, dz)), M["green"])
+    box("shelf_e", (0.3, 0.7, 0.02), (1.35, 0.85, 1.75), M["white_frame"])
+    box("dji_box", (0.25, 0.6, 0.25), (1.35, 0.85, 1.77), M["cardboard"])
+    box("wall_box_e", (0.08, 0.2, 0.2), (1.46, -0.2, 0.9), M["black_plastic"])
+    box("socket_e", (0.06, 0.15, 0.1), (1.47, -0.6, 0.35), M["tape_red"])
+    # ---- south (video): one long workbench row along the whole net, blue drawer units, PCs and
+    #      monitors on it; a second row further away; the humanoids and the crane beyond
+    desk(M, "desk_s", -0.15, -h - 0.5, 2.9, 0.8)
+    box("desk_s_drawers2", (0.55, 0.7, 0.45), (0.6, -h - 0.5, 0.4), M["blue"])
+    for i, (x, kind) in enumerate(((-1.2, "pc"), (-0.75, "mon"), (-0.15, "mon"), (0.35, "pc"), (0.85, "mon"))):
+        if kind == "pc":
+            box(f"pc_s{i}", (0.22, 0.48, 0.48), (x, -h - 0.55, 0.9), M["black_plastic"])
+        else:
+            monitor(M, f"mon_s{i}", x, -h - 0.7, 0.9, rot=180)
+            box(f"keyboard_s{i}", (0.45, 0.15, 0.02), (x, -h - 0.4, 0.9), M["black_plastic"])
+    box("parts_s", (0.3, 0.2, 0.12), (0.1, -h - 0.35, 0.9), M["cardboard"])
+    box("red_tool_s", (0.15, 0.1, 0.1), (-0.5, -h - 0.35, 0.9), M["tape_red"])
+    desk(M, "desk_s2", -0.4, -3.0, 2.9, 0.8)
+    for i, x in enumerate((-1.3, -0.4, 0.5)):
+        monitor(M, f"mon_s2_{i}", x, -2.9, 0.9)
+    box("chair_s", (0.5, 0.5, 0.5), (0.3, -2.2, 0), M["black_plastic"])
+    box("chair_s_back", (0.45, 0.08, 0.55), (0.3, -2.42, 0.5), M["black_plastic"])
+    humanoid(M, "humanoid_1", -0.9, -4.2)
+    humanoid(M, "humanoid_2", -2.3, -4.6)
+    box("crane_foot", (1.0, 0.8, 0.08), (-3.6, -5.6, 0), M["black_metal"])
+    box("crane_post", (0.1, 0.1, 2.3), (-3.6, -5.6, 0.08), M["black_metal"])
+    rod("crane_boom", Vector((-3.6, -5.6, 2.3)), Vector((-3.6, -4.7, 2.0)), 0.05, M["black_metal"])
+    for i, x in enumerate((-5.2, -3.4)):
+        desk(M, f"desk_w{i}", x, -4.0, 1.6, 0.75)
+        monitor(M, f"mon_w{i}", x, -3.9, 0.9)
+    box("cases", (0.8, 0.5, 0.9), (0.9, -4.6, 0), M["black_plastic"])
 
 
 def materials():

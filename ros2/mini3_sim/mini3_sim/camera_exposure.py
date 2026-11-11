@@ -15,7 +15,8 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 
-WHITE_BALANCE = np.array([1.10, 0.97, 0.86], np.float32)
+WHITE_BALANCE = np.array([1.10, 1.00, 0.93], np.float32)   # tuned so the mats match the real frames (Nov 2026)
+SOFTEN = 0.6   # the Mini 3 picture is softer than Gazebo's (compression, small lens): blur weight
 
 
 class CameraExposure(Node):
@@ -39,6 +40,10 @@ class CameraExposure(Node):
         lum = float((a @ np.array([0.299, 0.587, 0.114], np.float32)).mean())
         want = min(self.get_parameter("max_gain").value, max(0.7, target / max(lum, 1.0)))
         self.gain += self.get_parameter("adapt").value * (want - self.gain)
+        # soften: blend with a 3x3 box blur (real frames have about half the edge strength)
+        p = np.pad(a, ((1, 1), (1, 1), (0, 0)), mode="edge")
+        blur = sum(p[i:i + a.shape[0], j:j + a.shape[1]] for i in range(3) for j in range(3)) / 9.0
+        a = a + SOFTEN * (blur - a)
         v = a * self.gain * WHITE_BALANCE
         knee = 170.0
         v = np.where(v > knee, knee + (255 - knee) * np.tanh((v - knee) / (255 - knee)), v)
