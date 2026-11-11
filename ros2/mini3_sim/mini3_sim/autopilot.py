@@ -29,7 +29,13 @@ only gets the camera frames, the instruction and the telemetry.
 """
 import json
 import math
+import os
 import random
+import subprocess
+import threading
+import time
+import urllib.error
+import urllib.request
 
 import rclpy
 from rclpy.node import Node
@@ -293,6 +299,48 @@ class ScenarioPilot(Pilot):
         return math.copysign(p * self.rng.uniform(0.9, 1.1), err)
 
 
+class ModelPilot:
+    """A trained model flies: every 0.1 s of simulated time the newest camera frame goes to the
+    inference server (inference_server.py: POST /act, one JPEG -> {"action": [pitch, roll,
+    throttle, yaw]} in -1..1) and the answer is put on the sticks until the next one.
+
+    lockstep: Gazebo stands still while the model thinks and is then stepped exactly 0.1 s
+    further, so a slow model or a slow connection does not change the flight (the model always
+    acts on the frame of "now", 10 times per simulated second, as in the recorded data).
+    Without it the last sticks are held while waiting, as on the real drone.
+
+    The frame is sent as the recorder saves it (1280 x 720 JPEG, quality 90), so the model sees
+    what it saw in training."""
+
+    def __init__(self, node):
+        self.n = node
+        self.landing = False
+        self.phase = "model"
+        self.sticks = [0.0, 0.0, 0.0, 0.0]
+        self.next_query = 0.0
+        self.steps, self.model_ms, self.wall_ms, self.frame_age = 0, 0.0, 0.0, 0.0
+        self.stalled, self.last_t = 0, None
+
+    def step(self, t, dt, *unused):
+        if self.landing:                       # time limit: land where it is
+            self.n.resume()
+            return [0.0, 0.0, -100.0, 0.0]
+        if self.n.tel.get("flight_mode") == "AUTO_LANDING":      # the drone lands by itself now
+            self.n.resume()
+            return [0.0, 0.0, 0.0, 0.0]
+        # (the clock standing still for a few ticks means the 0.1 s step is done)
+        self.stalled = self.stalled + 1 if t == self.last_t else 0
+        self.last_t = t
+        if t + 0.006 >= self.next_query or self.stalled >= 3:
+            self.stalled = 0
+            self.next_query = t + self.n.model_dt
+            action = self.n.ask_model(t)
+            if action is not None:
+                self.sticks = [max(-100.0, min(100.0, 100.0 * float(v))) for v in action[:4]]
+                self.steps += 1
+        return list(self.sticks)
+
+
 class Autopilot(Node):
     def __init__(self):
         super().__init__("autopilot")
@@ -300,6 +348,36 @@ class Autopilot(Node):
         self.declare_parameter("seed", 0)               # 0 = different every run
         seed = self.get_parameter("seed").value
         self.rng = random.Random(seed or None)
+        # a trained model flies instead of the scripted pilot (see ModelPilot)
+        self.declare_parameter("model_url", "")           # e.g. https://host/rnode/node/8000
+        self.declare_parameter("cookie_file", os.path.expanduser("~/.ondemand_cookie"))
+        self.declare_parameter("lockstep", True)
+        self.declare_parameter("model_hz", 10.0)
+        self.declare_parameter("model_timeout_s", 45.0)   # simulated seconds per flight
+        self.declare_parameter("world", "cage_lab")
+        self.declare_parameter("results", "")             # CSV of the flights (default: none)
+        self.model_url = str(self.get_parameter("model_url").value or "").rstrip("/")
+        if self.model_url.lower() in ("off", "none", "false"):
+            self.model_url = ""
+        self.model_dt = 1.0 / float(self.get_parameter("model_hz").value)
+        self.declare_parameter("physics_step_s", 0.004)   # <max_step_size> of the world
+        self.sim_steps = max(1, round(self.model_dt / float(self.get_parameter("physics_step_s").value)))
+        self.frame, self.frame_lock = None, threading.Lock()
+        self.results, self.timed_out, self.cookie = [], False, ""
+        self.ctl, self.held = None, False            # Gazebo held still for the model (lockstep)
+        if self.model_url:
+            import cv2                                   # only needed when a model flies
+            from rclpy.callback_groups import ReentrantCallbackGroup
+            from sensor_msgs.msg import Image
+            self.cv2 = cv2
+            cf = os.path.expanduser(self.get_parameter("cookie_file").value)
+            if os.path.exists(cf):
+                self.cookie = open(cf).read().strip()
+                if self.cookie.lower().startswith("cookie:"):
+                    self.cookie = self.cookie[7:].strip()
+            self.create_subscription(Image, "/drone/camera/image_raw", self.on_image, 5,
+                                     callback_group=ReentrantCallbackGroup())
+            self.check_model()
         self.sticks_pub = self.create_publisher(Float32MultiArray, "/drone/sticks", 10)
         self.cmd_pub = self.create_publisher(String, "/drone/command", 10)
         self.rec_pub = self.create_publisher(String, "/drone/record", 10)
@@ -312,11 +390,143 @@ class Autopilot(Node):
         self.tries = 0
         self.pilot = None
         self.dt = 0.05
-        self.create_timer(self.dt, self.tick)
+        if self.model_url:
+            # wall-clock ticks: they must go on while Gazebo is held still for the model
+            from rclpy.clock import Clock, ClockType
+            self.create_timer(self.dt, self.tick, clock=Clock(clock_type=ClockType.STEADY_TIME))
+        else:
+            self.create_timer(self.dt, self.tick)
         self.get_logger().info("autopilot ready")
 
     def on_tel(self, m):
         self.tel = json.loads(m.data)
+
+    # ------------------------------------------------------------------ a model flies
+    def on_image(self, m):
+        import numpy as np
+        a = np.frombuffer(m.data, np.uint8).reshape(m.height, m.width, 3)
+        if m.encoding == "rgb8":
+            a = a[..., ::-1]                              # OpenCV wants BGR
+        stamp = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+        with self.frame_lock:
+            self.frame = (stamp, a)
+
+    def http(self, path, data=None, timeout=30.0):
+        req = urllib.request.Request(self.model_url + path, data=data, method="POST" if data else "GET")
+        if self.cookie:
+            req.add_header("Cookie", self.cookie)
+        if data:
+            req.add_header("Content-Type", "image/jpeg")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read()
+        try:
+            return json.loads(body)
+        except ValueError:
+            raise RuntimeError("the answer is not from the inference server (a login page?): the cookie in "
+                               f"{self.get_parameter('cookie_file').value} is missing or has expired")
+
+    def check_model(self):
+        try:
+            info = self.http("/")
+            self.get_logger().info(f"model server: {info.get('model', info)}")
+        except Exception as e:
+            self.get_logger().error(f"cannot reach the model server at {self.model_url}: {e}")
+
+    def world_control(self, req, wait):
+        """a request to Gazebo's world control service (pause, continue, step)."""
+        world = self.get_parameter("world").value
+        if self.ctl is not None:                       # let the last request finish first
+            try:
+                self.ctl.wait(timeout=6)
+            except subprocess.TimeoutExpired:
+                self.ctl.kill()
+            self.ctl = None
+        for tool in ("ign", "gz"):
+            cmd = [tool, "service", "-s", f"/world/{world}/control", "--reqtype",
+                   "ignition.msgs.WorldControl", "--reptype", "ignition.msgs.Boolean",
+                   "--timeout", "2000", "--req", req]
+            try:
+                if not wait:
+                    self.ctl = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    return True
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+                if "true" in r.stdout:
+                    return True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+        return False
+
+    def resume(self):
+        """Gazebo runs freely again (after a model's flight)."""
+        if self.held:
+            self.held = False
+            self.world_control("pause: false", wait=True)
+
+    def ask_model(self, t):
+        """one model step: newest frame -> server -> sticks (-1..1); with lockstep Gazebo stands
+        still meanwhile and is then stepped one model period further."""
+        lock = bool(self.get_parameter("lockstep").value)
+        t0 = time.time()
+        if lock and not self.held:
+            self.held = self.world_control("pause: true", wait=True)
+        elif self.held and self.ctl is not None:       # the last step request has to be through
+            try:
+                self.ctl.wait(timeout=6)
+            except subprocess.TimeoutExpired:
+                self.ctl.kill()
+            self.ctl = None
+        action = None
+        try:
+            # the picture of "now" reaches ROS a moment after it was taken: wait for it briefly
+            end = time.time() + (1.5 if self.held else 0.0)
+            while True:
+                now = self.now() if self.held else t
+                with self.frame_lock:
+                    fr = self.frame
+                if fr is not None and (fr[0] >= now - 0.08 or time.time() >= end):
+                    break
+                if time.time() >= end:
+                    return None
+                time.sleep(0.01)
+            self.pilot.frame_age += max(0.0, now - fr[0])
+            img = self.cv2.resize(fr[1], (1280, 720), interpolation=self.cv2.INTER_LINEAR)
+            ok, jpg = self.cv2.imencode(".jpg", img, [self.cv2.IMWRITE_JPEG_QUALITY, 90])
+            ans = self.http("/act", jpg.tobytes())
+            if "action" not in ans:
+                raise RuntimeError(str(ans))
+            self.pilot.model_ms += float(ans.get("model_ms", 0.0))
+            self.pilot.wall_ms += (time.time() - t0) * 1000
+            action = ans["action"]
+            # on the sticks before the simulation goes on
+            self.send_sticks([max(-100.0, min(100.0, 100.0 * float(v))) for v in action[:4]])
+        except Exception as e:
+            self.get_logger().error(f"model step failed: {e}", throttle_duration_sec=5.0)
+        finally:
+            if self.held:                              # one model period further, then still again
+                time.sleep(0.02)                       # (the sticks have to reach the drone first)
+                self.world_control(f"pause: true, multi_step: {self.sim_steps}", wait=False)
+        return action
+
+    def write_results(self, summary=False):
+        path = str(self.get_parameter("results").value or "")
+        if path.lower() in ("", "off", "none") or not self.results:
+            return
+        path = os.path.expanduser(path)
+        keys = list(self.results[0])
+        with open(path, "w") as f:
+            f.write(",".join(keys) + "\n")
+            for r in self.results:
+                f.write(",".join(str(r[k]) for k in keys) + "\n")
+        if not summary:
+            return
+        per = {}
+        for r in self.results:
+            p = per.setdefault(r["scenario"], [0, 0])
+            p[0] += r["landed_on_pad"]
+            p[1] += 1
+        self.get_logger().info("landed on the pad, per scenario: " +
+                               ", ".join(f"{k} {a}/{b}" for k, (a, b) in sorted(per.items())))
+        self.get_logger().info(f"results written to {path}")
 
     def on_status(self, m):
         self.status = json.loads(m.data)
@@ -352,6 +562,7 @@ class Autopilot(Node):
             self.send_sticks([0, 0, 0, 0])
             if self.done >= self.get_parameter("episodes").value or st.get("plan_done"):
                 self.get_logger().info(f"finished: {self.ok_count} of {self.done} episodes landed on the pad")
+                self.write_results(summary=True)
                 self.go("finished")
                 return
             # nothing placed for a while (a lost Gazebo reply): ask the recorder to place again
@@ -384,7 +595,10 @@ class Autopilot(Node):
         elif self.state == "rec_wait":
             self.send_sticks([0, 0, 0, 0])
             if st["recording"]:
-                if st.get("scenario"):
+                self.timed_out = False
+                if self.model_url:
+                    self.pilot = ModelPilot(self)
+                elif st.get("scenario"):
                     self.pilot = ScenarioPilot(self.rng, st["scenario"])
                 else:
                     self.pilot = Pilot(self.rng, search=bool(st.get("search")))
@@ -399,11 +613,15 @@ class Autopilot(Node):
                                 # "clearly in view": well in from the side it enters from, but
                                 # anywhere up-down (a close pad shows near the bottom edge)
                                 pad_in_view(fwd, right, tel["sim_z"], margin=6.0, vmargin=0.0))
-            if age > TIMEOUT_S and not self.pilot.landing:
+            limit = self.get_parameter("model_timeout_s").value if self.model_url else TIMEOUT_S
+            if age > limit and not self.pilot.landing:
                 self.pilot.phase, self.pilot.landing = "land", True
+                self.timed_out = True
             self.send_sticks(s)
             if tel["on_ground"]:
                 self.send_sticks([0, 0, 0, 0])
+                self.flight_s = age
+                self.resume()
                 self.go("wait_stop")
         elif self.state == "wait_stop":
             self.send_sticks([0, 0, 0, 0])
@@ -412,6 +630,28 @@ class Autopilot(Node):
                 ok = abs(fwd) < PAD_HALF - 0.05 and abs(right) < PAD_HALF - 0.05
                 check_ok = "CHECK" not in st.get("message", "")
                 ok = ok and check_ok
+                if self.model_url:
+                    # a model's flight counts once: landed on the pad by itself within the time, or not
+                    ok = ok and not self.timed_out
+                    sc = st.get("scenario") or {}
+                    p = self.pilot
+                    self.results.append({
+                        "setup": self.done + 1, "scenario": sc.get("scenario", ""), "pad_side": sc.get("pad_side", ""),
+                        "landed_on_pad": int(ok), "off_centre_cm": round(math.hypot(fwd, right) * 100, 1),
+                        "timed_out": int(self.timed_out), "flight_s": round(self.flight_s, 1), "model_steps": p.steps,
+                        "model_ms": round(p.model_ms / max(p.steps, 1), 1),
+                        "step_wall_ms": round(p.wall_ms / max(p.steps, 1), 1),
+                        "frame_age_ms": round(1000 * p.frame_age / max(p.steps, 1), 1), "episode": st.get("episode", "")})
+                    self.done += 1
+                    self.ok_count += ok
+                    self.rec_pub.publish(String(data="success" if ok else "fail_skip"))
+                    self.get_logger().info(
+                        f"model flight {self.done}: {'LANDED ON THE PAD' if ok else 'missed'}"
+                        f"{' (time limit)' if self.timed_out else ''}, {math.hypot(fwd, right) * 100:.0f} cm "
+                        f"from the pad centre; {self.ok_count}/{self.done} so far")
+                    self.write_results()
+                    self.go("wait_setup")
+                    return
                 self.done += 1
                 self.ok_count += ok
                 self.tries = 0 if ok else self.tries + 1
@@ -436,8 +676,11 @@ class Autopilot(Node):
 
 
 def main():
+    from rclpy.executors import MultiThreadedExecutor
     rclpy.init()
-    rclpy.spin(Autopilot())
+    ex = MultiThreadedExecutor(num_threads=3)     # the camera keeps arriving while a model step waits
+    ex.add_node(Autopilot())
+    ex.spin()
 
 
 if __name__ == "__main__":

@@ -121,6 +121,8 @@ class Recorder(Node):
         self.declare_parameter("setups", "plan")
         # more than 216, e.g. to record replacements for deleted search episodes (setups 217, 218...)
         self.declare_parameter("plan_size", PLAN_SIZE)
+        # scenario layouts: 9000 = the training set; another number gives fresh layouts (model tests)
+        self.declare_parameter("scenario_seed", 9000)
         self.plan_size = int(self.get_parameter("plan_size").value)
         self.scenario_mode = self.get_parameter("setups").value == "scenarios"
         self.random_mode = self.get_parameter("setups").value == "random" or self.scenario_mode
@@ -172,7 +174,7 @@ class Recorder(Node):
         if self.next_index >= self.plan_size or (not self.random_mode and self.next_index >= PLAN_SIZE):
             return None
         if self.scenario_mode:
-            return make_scenario(self.next_index)
+            return make_scenario(self.next_index, int(self.get_parameter("scenario_seed").value))
         return make_random(self.next_index) if self.random_mode else self.plan[self.next_index]
 
     def describe(self):
