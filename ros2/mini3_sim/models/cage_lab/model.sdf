@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!-- The lab and the flight cage. x = east, y = north, z = up, cage centre on the floor = origin.
+     lab.obj comes from sim/blender/build_lab.py --export-obj, net.obj from tools/make_net.py. -->
+<sdf version="1.9">
+  <model name="cage_lab">
+    <static>true</static>
+    <link name="lab">
+      <visual name="lab">
+        <geometry><mesh><uri>model://cage_lab/meshes/lab.obj</uri></mesh></geometry>
+      </visual>
+      <visual name="net">
+        <cast_shadows>false</cast_shadows>
+        <geometry><mesh><uri>model://cage_lab/meshes/net.obj</uri></mesh></geometry>
+        <material>
+          <ambient>0.02 0.02 0.02 1</ambient><diffuse>0.03 0.03 0.03 1</diffuse>
+          <specular>0.02 0.02 0.02 1</specular>
+        </material>
+      </visual>
+      <!-- collisions: the lab floor and the four net walls + the top (thin boxes) -->
+      <collision name="floor">
+        <pose>0 0 -0.05 0 0 0</pose>
+        <geometry><box><size>20 20 0.1</size></box></geometry>
+      </collision>
+      <collision name="net_n"><pose>0 1.0 1.0 0 0 0</pose><geometry><box><size>2 0.01 2</size></box></geometry></collision>
+      <collision name="net_s"><pose>0 -1.0 1.0 0 0 0</pose><geometry><box><size>2 0.01 2</size></box></geometry></collision>
+      <collision name="net_e"><pose>1.0 0 1.0 0 0 0</pose><geometry><box><size>0.01 2 2</size></box></geometry></collision>
+      <collision name="net_w"><pose>-1.0 0 1.0 0 0 0</pose><geometry><box><size>0.01 2 2</size></box></geometry></collision>
+      <collision name="net_top"><pose>0 0 1.9 0 0 0</pose><geometry><box><size>2 2 0.01</size></box></geometry></collision>
+    </link>
+  </model>
+</sdf>

@@ -1,0 +1,7 @@
+newmtl net_rope
+Ka 0 0 0
+Kd 0.03 0.03 0.03
+Ks 0.02 0.02 0.02
+Ns 10
+d 1
+illum 1

@@ -21,6 +21,7 @@ Other models:
 Run on a GPU node (env openvla):
 
     python3 inference_server.py ~/runs/model_2000steps --port 8000
+    python3 inference_server.py ~/runs/model_2000steps --port 8000 --decode mean   # averaged sticks
 
 Run WITHOUT a GPU or model (for testing the PC brain and the app):
 
@@ -62,12 +63,13 @@ def prepare_image(jpeg_bytes, center_crop=True):
 class OpenVLAPolicy:
     """The fine-tuned model. Loading takes about a minute and ~15 GB of GPU memory (bf16)."""
 
-    def __init__(self, ckpt, center_crop=True):
+    def __init__(self, ckpt, center_crop=True, decode="argmax"):
         import torch
         from transformers import AutoModelForVision2Seq, AutoProcessor
         self.torch = torch
         self.ckpt = os.path.expanduser(ckpt)
         self.center_crop = center_crop
+        self.decode = decode
         self.processor = AutoProcessor.from_pretrained(self.ckpt, trust_remote_code=True)
         self.vla = AutoModelForVision2Seq.from_pretrained(
             self.ckpt, torch_dtype=torch.bfloat16, trust_remote_code=True).to("cuda:0").eval()
@@ -104,6 +106,11 @@ class OpenVLAPolicy:
             logits = np.stack([s[0].float().cpu().numpy() for s in captured["scores"]])
             conf = token_confidence(logits, self.vla.vocab_size, np.asarray(self.vla.bin_centers),
                                     np.asarray(stats["q01"]), np.asarray(stats["q99"]))
+            if self.decode == "mean":
+                # the average over all 256 bins, weighted by their probability, instead of the single
+                # most likely bin: when "0" is the likeliest bin but most of the rest says "left",
+                # the stick goes a little left instead of exactly 0
+                return [float(x) for x in conf["mean"]], conf
         return [float(x) for x in np.asarray(a, dtype=float)], conf
 
 
@@ -114,7 +121,7 @@ def token_confidence(logits, vocab_size, bin_centers, q01, q99):
     n_bins = len(bin_centers)
     token_ids = np.arange(vocab_size - 256, vocab_size)
     bins = np.clip(vocab_size - token_ids - 1, 0, n_bins - 1)
-    p_out, spread = [], []
+    p_out, spread, means = [], [], []
     for k, row in enumerate(logits):
         z = row.astype(np.float64)
         prob = np.exp(z - z.max())
@@ -123,8 +130,9 @@ def token_confidence(logits, vocab_size, bin_centers, q01, q99):
         values = 0.5 * (bin_centers[bins] + 1) * (q99[k] - q01[k]) + q01[k]
         mean = float((prob * values).sum())
         p_out.append(round(float(prob.max()), 3))
+        means.append(round(mean, 4))
         spread.append(round(100 * float(np.sqrt((prob * (values - mean) ** 2).sum())), 1))
-    return {"p": p_out, "spread_pct": spread}
+    return {"p": p_out, "spread_pct": spread, "mean": means}
 
 
 class CNNPolicy:
@@ -211,6 +219,9 @@ def main():
     ap.add_argument("--mock-delay-ms", type=float, default=150)
     ap.add_argument("--mock-seek", action="store_true", help="mock steers toward red pixels instead of a fixed command")
     ap.add_argument("--no-center-crop", action="store_true", help="feed the plain 224 x 224 frame")
+    ap.add_argument("--decode", choices=["argmax", "mean"], default="argmax",
+                    help="argmax: the most likely bin per stick (OpenVLA's default); mean: the "
+                         "probability-weighted average over all bins (smoother, rarely exactly 0)")
     args = ap.parse_args()
 
     global policy
@@ -219,7 +230,7 @@ def main():
     elif args.cnn:
         policy = CNNPolicy(args.cnn)
     elif args.checkpoint:
-        policy = OpenVLAPolicy(args.checkpoint, center_crop=not args.no_center_crop)
+        policy = OpenVLAPolicy(args.checkpoint, center_crop=not args.no_center_crop, decode=args.decode)
     else:
         ap.error("give a checkpoint folder or --mock")
     print(f"[SERVER] model: {policy.name}, listening on port {args.port}")
